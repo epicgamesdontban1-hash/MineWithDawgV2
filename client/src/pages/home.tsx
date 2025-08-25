@@ -1728,6 +1728,38 @@ export default function Home() {
                             </div>
                           </div>
 
+                          <div className="mb-4">
+                            <Button
+                              onClick={async () => {
+                                if (confirm('Are you sure you want to clear all saved accounts? This cannot be undone.')) {
+                                  try {
+                                    const response = await fetch('/api/admin/clear-accounts', { method: 'DELETE' });
+                                    const data = await response.json();
+                                    if (response.ok) {
+                                      toast({
+                                        title: "Success",
+                                        description: data.message,
+                                      });
+                                    } else {
+                                      throw new Error(data.message);
+                                    }
+                                  } catch (error) {
+                                    toast({
+                                      title: "Error",
+                                      description: "Failed to clear accounts",
+                                      variant: "destructive",
+                                    });
+                                  }
+                                }
+                              }}
+                              variant="destructive"
+                              size="sm"
+                              className="text-xs"
+                            >
+                              Clear All Accounts
+                            </Button>
+                          </div>
+
                           {isLoadingAdmin ? (
                             <div className="text-center py-8 text-gray-400">Loading bots...</div>
                           ) : adminConnections.length === 0 ? (
