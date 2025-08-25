@@ -108,17 +108,12 @@ export default function Home() {
   const [helpSessionId, setHelpSessionId] = useState<string | null>(null);
   const [helpMessages, setHelpMessages] = useState<any[]>([]);
   const [helpInput, setHelpInput] = useState("");
-  const [microsoftAuth, setMicrosoftAuth] = useState({
-    isActive: false
-  });
-
-  const [passwordFlow, setPasswordFlow] = useState({
-    isActive: false,
-    type: '', // 'create' or 'verify'
-    email: '',
-    password: '',
-    isSubmitting: false
-  });
+  const [microsoftAuth, setMicrosoftAuth] = useState<{
+    isActive: boolean;
+    verificationUri?: string;
+    userCode?: string;
+    message?: string;
+  }>({ isActive: false });
   const autoReconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const spammerIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const helpMessagesRef = useRef<HTMLDivElement>(null);
@@ -172,68 +167,26 @@ export default function Home() {
           break;
 
         case 'microsoft_auth_verified':
-          setMicrosoftAuth({ isActive: false });
-          break;
+          setMicrosoftAuth(prev => ({
+            ...prev,
+            message: data.message,
+            verificationUri: undefined,
+            userCode: undefined
+          }));
 
-        case 'first_time_password_required':
-          setMicrosoftAuth({ isActive: false });
-          setPasswordFlow({
-            isActive: true,
-            type: 'create',
-            email: data.data.email,
-            password: '',
-            isSubmitting: false
-          });
-          break;
-
-        case 'password_required':
-          setPasswordFlow({
-            isActive: true,
-            type: 'verify',
-            email: data.data.email,
-            password: '',
-            isSubmitting: false
-          });
-          break;
-
-        case 'password_created_successfully':
-          setPasswordFlow({ isActive: false, type: '', email: '', password: '', isSubmitting: false });
           toast({
-            title: "Success",
-            description: data.data.message,
+            title: "Authentication Successful!",
+            description: data.message,
           });
-          break;
 
-        case 'password_verified':
-          setPasswordFlow({ isActive: false, type: '', email: '', password: '', isSubmitting: false });
-          break;
-
-        case 'password_verification_failed':
-          setPasswordFlow(prev => ({ ...prev, isSubmitting: false }));
-          // Flash red screen
-          document.body.style.backgroundColor = '#dc2626';
+          // Close the modal after a short delay
           setTimeout(() => {
-            document.body.style.backgroundColor = '';
-          }, 300);
-          toast({
-            title: "Authentication Failed",
-            description: data.message,
-            variant: "destructive",
-          });
+            setMicrosoftAuth({ isActive: false });
+          }, 2000);
           break;
-
-        case 'password_creation_error':
-        case 'password_verification_error':
-          setPasswordFlow(prev => ({ ...prev, isSubmitting: false }));
-          toast({
-            title: "Error",
-            description: data.message,
-            variant: "destructive",
-          });
-          break;
-
 
         case 'bot_connected':
+          // setIsConnecting(false); // This is handled by useWebSocket hook
           setMicrosoftAuth({ isActive: false }); // Ensure modal is closed
           setConnectionStatus(prev => ({
             ...prev,
@@ -279,7 +232,7 @@ export default function Home() {
             serverInfo: { ...prev.serverInfo, motd: "Disconnected" }
           }));
           setOnlinePlayers([]);
-
+          
           // Close Microsoft auth modal if it's open
           setMicrosoftAuth({ isActive: false });
 
@@ -414,7 +367,52 @@ export default function Home() {
           });
           break;
 
+        // Removed redundant Microsoft auth cases as they are handled in the initial connection setup and the `message` payload
+        // case 'auth_status':
+        //   if (data.status === 'starting_auth') {
+        //     setMicrosoftAuth(prev => ({
+        //       ...prev,
+        //       isActive: true,
+        //       message: data.message
+        //     }));
+        //   }
+        //   break;
+
+        // case 'microsoft_auth_code':
+        //   setMicrosoftAuth(prev => ({
+        //     ...prev,
+        //     isActive: true,
+        //     verificationUri: data.verificationUri,
+        //     userCode: data.userCode,
+        //     message: data.message
+        //   }));
+        //   toast({
+        //     title: "Microsoft Authentication Required",
+        //     description: "Please complete authentication in the popup window",
+        //   });
+        //   break;
+
+        // case 'microsoft_auth_verified':
+        //   setMicrosoftAuth(prev => ({
+        //     ...prev,
+        //     message: data.message,
+        //     verificationUri: undefined,
+        //     userCode: undefined
+        //   }));
+
+        //   toast({
+        //     title: "Authentication Successful!",
+        //     description: data.message,
+        //   });
+
+        //   // Close the modal after a short delay
+        //   setTimeout(() => {
+        //     setMicrosoftAuth({ isActive: false });
+        //   }, 2000);
+        //   break;
+
         case 'connection_error':
+          // setIsConnecting(false); // This is handled by useWebSocket hook
           setMicrosoftAuth({ isActive: false }); // Close auth modal on error
           toast({
             title: "Connection Error",
@@ -423,7 +421,7 @@ export default function Home() {
           });
           break;
 
-        case 'bot_error':
+        case 'bot_error': // Added specific handling for bot_error
           toast({
             title: "Bot Error",
             description: message.message || "An error occurred with the bot",
@@ -959,41 +957,6 @@ export default function Home() {
         return 'text-gray-400 border-gray-400';
     }
   };
-
-  // WebSocket message handlers not directly related to the core component logic
-  // These are for managing passwords and related flows
-  const handlePasswordSubmit = () => {
-    if (!passwordFlow.password.trim() || passwordFlow.isSubmitting) return;
-
-    setPasswordFlow(prev => ({ ...prev, isSubmitting: true }));
-
-    if (passwordFlow.type === 'create') {
-      ws?.send(JSON.stringify({
-        type: 'create_user_password',
-        data: {
-          email: passwordFlow.email,
-          password: passwordFlow.password,
-          connectionId: connectionId
-        }
-      }));
-    } else {
-      ws?.send(JSON.stringify({
-        type: 'verify_user_password',
-        data: {
-          email: passwordFlow.email,
-          password: passwordFlow.password,
-          connectionId: connectionId,
-          serverIp: serverIP,
-          version: version
-        }
-      }));
-    }
-  };
-
-  const handlePasswordCancel = () => {
-    setPasswordFlow({ isActive: false, type: '', email: '', password: '', isSubmitting: false });
-  };
-
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
@@ -1728,38 +1691,6 @@ export default function Home() {
                             </div>
                           </div>
 
-                          <div className="mb-4">
-                            <Button
-                              onClick={async () => {
-                                if (confirm('Are you sure you want to clear all saved accounts? This cannot be undone.')) {
-                                  try {
-                                    const response = await fetch('/api/admin/clear-accounts', { method: 'DELETE' });
-                                    const data = await response.json();
-                                    if (response.ok) {
-                                      toast({
-                                        title: "Success",
-                                        description: data.message,
-                                      });
-                                    } else {
-                                      throw new Error(data.message);
-                                    }
-                                  } catch (error) {
-                                    toast({
-                                      title: "Error",
-                                      description: "Failed to clear accounts",
-                                      variant: "destructive",
-                                    });
-                                  }
-                                }
-                              }}
-                              variant="destructive"
-                              size="sm"
-                              className="text-xs"
-                            >
-                              Clear All Accounts
-                            </Button>
-                          </div>
-
                           {isLoadingAdmin ? (
                             <div className="text-center py-8 text-gray-400">Loading bots...</div>
                           ) : adminConnections.length === 0 ? (
@@ -1992,84 +1923,73 @@ export default function Home() {
 
       {/* Microsoft Authentication Modal */}
       {microsoftAuth.isActive && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <Card className="w-full max-w-md bg-gray-800 border-gray-700">
-            <CardContent className="pt-6">
-              <div className="text-center space-y-4">
-                <div className="text-white text-lg font-semibold">Microsoft Authentication</div>
-                <div className="text-gray-400 text-sm">
-                  Authenticating with Microsoft account...
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-gray-800 border border-minecraft-dark-stone rounded-lg max-w-md w-full mx-4">
+            <div className="p-6">
+              <div className="text-center mb-6">
+                <div className="w-16 h-16 mx-auto mb-4 bg-blue-600/10 rounded-full flex items-center justify-center">
+                  <div className="text-blue-400 text-2xl">🔐</div>
                 </div>
-                <div className="flex justify-center">
-                  <div className="w-8 h-8 border-4 border-minecraft-green border-t-transparent rounded-full animate-spin"></div>
-                </div>
+                <h3 className="text-xl font-semibold text-minecraft-green mb-2">Microsoft Authentication Required</h3>
+                <p className="text-gray-400 text-sm">
+                  {microsoftAuth.message || "Please complete the authentication process to continue"}
+                </p>
               </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
 
-      {/* Password Flow Modal */}
-      {passwordFlow.isActive && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <Card className="w-full max-w-md bg-gray-800 border-gray-700">
-            <CardContent className="pt-6">
-              <div className="space-y-4">
+              {microsoftAuth.verificationUri && microsoftAuth.userCode ? (
+                <div className="space-y-4">
+                  <div className="bg-gray-700 rounded-lg p-4 border border-gray-600">
+                    <div className="text-sm text-gray-300 mb-2">Step 1: Visit this URL</div>
+                    <div className="bg-gray-800 rounded px-3 py-2 font-mono text-sm text-blue-400 break-all">
+                      {microsoftAuth.verificationUri}
+                    </div>
+                    <Button
+                      onClick={() => window.open(microsoftAuth.verificationUri, '_blank')}
+                      className="w-full mt-2 bg-blue-600 hover:bg-blue-700"
+                    >
+                      Open Microsoft Login
+                    </Button>
+                  </div>
+
+                  <div className="bg-gray-700 rounded-lg p-4 border border-gray-600">
+                    <div className="text-sm text-gray-300 mb-2">Step 2: Enter this code</div>
+                    <div className="bg-gray-800 rounded px-3 py-2 font-mono text-xl text-center text-minecraft-green font-bold tracking-wider">
+                      {microsoftAuth.userCode}
+                    </div>
+                    <Button
+                      onClick={() => navigator.clipboard.writeText(microsoftAuth.userCode || '')}
+                      variant="outline"
+                      className="w-full mt-2"
+                    >
+                      Copy Code
+                    </Button>
+                  </div>
+
+                  <div className="text-center">
+                    <div className="inline-flex items-center space-x-2 text-sm text-gray-400">
+                      <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
+                      <span>Waiting for authentication...</span>
+                    </div>
+                  </div>
+                </div>
+              ) : microsoftAuth.message && microsoftAuth.message.includes('verified') ? (
+                <div className="text-center space-y-4">
+                  <div className="w-16 h-16 mx-auto bg-green-600/10 rounded-full flex items-center justify-center">
+                    <div className="text-green-400 text-2xl">✓</div>
+                  </div>
+                  <div className="text-green-400 font-medium">Authentication Successful!</div>
+                  <div className="text-sm text-gray-400">{microsoftAuth.message}</div>
+                </div>
+              ) : (
                 <div className="text-center">
-                  <div className="text-white text-lg font-semibold">
-                    {passwordFlow.type === 'create' ? 'Create Password' : 'Enter Password'}
-                  </div>
-                  <div className="text-gray-400 text-sm mt-2">
-                    {passwordFlow.type === 'create'
-                      ? 'Create a password, only 1 in a lifetime, choose wise'
-                      : `Enter password for ${passwordFlow.email}`
-                    }
+                  <div className="inline-flex items-center space-x-2 text-sm text-gray-400">
+                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
+                    <span>Starting authentication...</span>
                   </div>
                 </div>
-
-                <div>
-                  <Label htmlFor="password-input" className="text-gray-300">
-                    {passwordFlow.type === 'create' ? 'New Password' : 'Password'}
-                  </Label>
-                  <Input
-                    id="password-input"
-                    type="password"
-                    placeholder="Enter password"
-                    value={passwordFlow.password}
-                    onChange={(e) => setPasswordFlow(prev => ({ ...prev, password: e.target.value }))}
-                    onKeyPress={(e) => e.key === 'Enter' && handlePasswordSubmit()}
-                    className="bg-gray-700 border-gray-600 text-white focus:border-minecraft-green"
-                    disabled={passwordFlow.isSubmitting}
-                  />
-                </div>
-
-                <div className="flex space-x-3">
-                  <Button
-                    onClick={handlePasswordSubmit}
-                    disabled={!passwordFlow.password.trim() || passwordFlow.isSubmitting}
-                    className="flex-1 bg-minecraft-green hover:bg-minecraft-dark-green"
-                  >
-                    {passwordFlow.isSubmitting ? (
-                      <div className="flex items-center space-x-2">
-                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        <span>Processing...</span>
-                      </div>
-                    ) : (
-                      passwordFlow.type === 'create' ? 'Create Password' : 'Login'
-                    )}
-                  </Button>
-                  <Button
-                    onClick={handlePasswordCancel}
-                    variant="outline"
-                    className="flex-1"
-                    disabled={passwordFlow.isSubmitting}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
