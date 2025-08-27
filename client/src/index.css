@@ -124,6 +124,86 @@
   animation: bounce-in 0.6s ease-out;
 }
 
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-slide-up {
+  animation: slide-up 0.4s ease-out;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 5px var(--minecraft-green);
+  }
+  50% {
+    box-shadow: 0 0 20px var(--minecraft-green), 0 0 30px var(--minecraft-green);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.1),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+@keyframes minecraft-block {
+  0% {
+    transform: scale(1) rotateY(0deg);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  }
+  50% {
+    transform: scale(1.05) rotateY(5deg);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+  }
+  100% {
+    transform: scale(1) rotateY(0deg);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  }
+}
+
+.animate-minecraft-block {
+  animation: minecraft-block 0.3s ease-in-out;
+}
+
 @layer base {
   * {
     @apply border-border;
@@ -197,5 +277,138 @@
 
   .hover\:bg-minecraft-dark-green:hover {
     background-color: var(--minecraft-dark-green);
+  }
+
+  /* Enhanced gradient backgrounds */
+  .bg-gradient-minecraft {
+    background: linear-gradient(135deg, var(--minecraft-green), var(--minecraft-dark-green));
+  }
+
+  .bg-gradient-gold {
+    background: linear-gradient(135deg, var(--minecraft-gold), #b8860b);
+  }
+
+  .bg-gradient-stone {
+    background: linear-gradient(135deg, var(--minecraft-stone), var(--minecraft-dark-stone));
+  }
+
+  .bg-gradient-primary {
+    background: linear-gradient(135deg, var(--primary), hsl(203.8863 88.2845% 43.1373%));
+  }
+
+  /* Modern glass effect */
+  .glass-effect {
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  .glass-effect-dark {
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Enhanced shadows */
+  .shadow-minecraft {
+    box-shadow: 0 4px 6px -1px rgba(102, 117, 49, 0.1), 
+                0 2px 4px -1px rgba(102, 117, 49, 0.06);
+  }
+
+  .shadow-minecraft-lg {
+    box-shadow: 0 10px 15px -3px rgba(102, 117, 49, 0.1), 
+                0 4px 6px -2px rgba(102, 117, 49, 0.05);
+  }
+
+  .shadow-gold {
+    box-shadow: 0 4px 6px -1px rgba(255, 215, 0, 0.2), 
+                0 2px 4px -1px rgba(255, 215, 0, 0.1);
+  }
+
+  .shadow-glow {
+    box-shadow: 0 0 20px rgba(var(--primary), 0.3);
+  }
+
+  /* Enhanced hover effects */
+  .hover-lift {
+    transition: all 0.3s ease;
+  }
+
+  .hover-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+  }
+
+  .hover-scale {
+    transition: transform 0.2s ease;
+  }
+
+  .hover-scale:hover {
+    transform: scale(1.05);
+  }
+
+  /* Text effects */
+  .text-glow {
+    text-shadow: 0 0 10px currentColor;
+  }
+
+  .text-shadow {
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Border effects */
+  .border-glow {
+    border: 2px solid transparent;
+    background: linear-gradient(var(--background), var(--background)) padding-box,
+                linear-gradient(45deg, var(--primary), var(--minecraft-green)) border-box;
+  }
+
+  /* Interactive states */
+  .interactive {
+    transition: all 0.2s ease;
+    cursor: pointer;
+  }
+
+  .interactive:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .interactive:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  }
+
+  /* Minecraft-style pixelated effects */
+  .pixelated {
+    image-rendering: pixelated;
+    image-rendering: -moz-crisp-edges;
+    image-rendering: crisp-edges;
+  }
+
+  /* Status indicators */
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    position: relative;
+  }
+
+  .status-dot::after {
+    content: '';
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: inherit;
+    animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+
+  @keyframes ping {
+    75%, 100% {
+      transform: scale(2);
+      opacity: 0;
+    }
   }
 }

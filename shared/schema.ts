@@ -72,3 +72,31 @@ export const insertUserSchema = createInsertSchema(users).pick({
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
+
+export const serverProfiles = pgTable("server_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  profileName: text("profile_name").notNull(),
+  username: text("username").notNull(),
+  serverIp: text("server_ip").notNull(),
+  version: text("version").notNull(),
+  authMode: text("auth_mode").default("offline"),
+  messageOnLoad: text("message_on_load"),
+  messageOnLoadDelay: integer("message_on_load_delay").default(2000),
+  createdAt: timestamp("created_at").default(sql`now()`),
+  updatedAt: timestamp("updated_at").default(sql`now()`),
+});
+
+export const insertServerProfileSchema = createInsertSchema(serverProfiles).pick({
+  userId: true,
+  profileName: true,
+  username: true,
+  serverIp: true,
+  version: true,
+  authMode: true,
+  messageOnLoad: true,
+  messageOnLoadDelay: true,
+});
+
+export type InsertServerProfile = z.infer<typeof insertServerProfileSchema>;
+export type ServerProfile = typeof serverProfiles.$inferSelect;

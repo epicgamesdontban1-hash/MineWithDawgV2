@@ -1,14 +1,19 @@
-import { useState, useEffect, useRef } from "react";
-import { useWebSocket } from "@/lib/websocket";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
-import { Box, Server, Gamepad2, MessageSquare, Play, Pause, Send } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
+import React, { useState, useRef, useEffect } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Textarea } from '../components/ui/textarea';
+import { Badge } from '../components/ui/badge';
+import { useWebSocket } from '../lib/websocket';
+import { useToast } from '../hooks/use-toast';
+import { LoginForm } from '../components/auth/LoginForm';
+import { RegisterForm } from '../components/auth/RegisterForm';
+import { ServerProfileManager } from '../components/profiles/ServerProfileManager';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '../components/ui/dialog';
+import { ScrollArea } from '../components/ui/scroll-area';
+import { Server, MessageSquare, Settings, Users, Package, Shield, HelpCircle, LogOut, Eye, EyeOff, ChevronDown, ChevronUp, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, RotateCcw, Move3D, Activity, Gamepad2, Zap, Clock, Play, Pause, Trash2, Download, Info, AlertTriangle, CheckCircle2, Circle, Timer, Send, ExternalLink, BookOpen, Lock } from 'lucide-react';
 
 interface ChatMessage {
   id: string;
@@ -70,7 +75,7 @@ const QUICK_COMMANDS = ['/help', '/list', '/spawn', '/home'];
 
 export default function Home() {
   const [username, setUsername] = useState("Player123");
-  const [authMode, setAuthMode] = useState("offline");
+  const [authMode, setAuthMode] = useState("login"); // Default to login view
   const [serverIP, setServerIP] = useState("");
   const [version, setVersion] = useState("1.21.4");
   const [chatInput, setChatInput] = useState("");
@@ -136,6 +141,12 @@ export default function Home() {
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const logsRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+
+  const [currentUser, setCurrentUser] = useState<{ id: string; username: string } | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [botAuthMode, setBotAuthMode] = useState('offline'); // New state for bot auth mode
+  const [showLearnMore, setShowLearnMore] = useState(false);
+  const [activeLearnSection, setActiveLearnSection] = useState('overview');
 
   const { isConnected: wsConnected, sendMessage, ws } = useWebSocket({
     onMessage: (message) => {
@@ -232,7 +243,7 @@ export default function Home() {
             serverInfo: { ...prev.serverInfo, motd: "Disconnected" }
           }));
           setOnlinePlayers([]);
-          
+
           // Close Microsoft auth modal if it's open
           setMicrosoftAuth({ isActive: false });
 
@@ -497,6 +508,60 @@ export default function Home() {
     }
   }, [activeTab]);
 
+  useEffect(() => {
+    // Check for saved authentication
+    const savedUser = localStorage.getItem('currentUser');
+    if (savedUser) {
+      const user = JSON.parse(savedUser);
+      setCurrentUser(user);
+      setIsAuthenticated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (wsConnected && connectionStatus.isConnected && kickReason) {
+      // Auto-reconnect after kick if enabled
+      if (autoReconnect && lastConnectionData) {
+        const timeout = setTimeout(() => {
+          handleReconnect();
+          setKickReason(null);
+        }, 5000);
+        autoReconnectTimeoutRef.current = timeout;
+      }
+    }
+  }, [kickReason, autoReconnect, wsConnected, connectionStatus.isConnected, lastConnectionData]);
+
+  const handleLogin = (userId: string, username: string) => {
+    const user = { id: userId, username };
+    setCurrentUser(user);
+    setIsAuthenticated(true);
+    localStorage.setItem('currentUser', JSON.stringify(user));
+  };
+
+  const handleLogout = () => {
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    localStorage.removeItem('currentUser');
+
+    // Disconnect bot if connected
+    if (connectionStatus.isConnected && connectionId) {
+      sendMessage({
+        type: 'disconnect_bot',
+        data: { connectionId }
+      });
+    }
+  };
+
+  const handleLoadProfile = (profile: any) => {
+    setUsername(profile.username);
+    setServerIP(profile.serverIp);
+    setVersion(profile.version);
+    setBotAuthMode(profile.authMode || 'offline');
+    setMessageOnLoad(profile.messageOnLoad || '');
+    setMessageOnLoadDelay(profile.messageOnLoadDelay || 2000);
+  };
+
+
   const handleConnect = async () => {
     if (!username.trim() || !serverIP.trim()) {
       toast({
@@ -509,7 +574,7 @@ export default function Home() {
       return;
     }
 
-    if (authMode === 'microsoft' && !username.includes('@')) {
+    if (botAuthMode === 'microsoft' && !username.includes('@')) {
       toast({
         title: "Invalid Email",
         description: "Please enter a valid Microsoft email address",
@@ -526,7 +591,7 @@ export default function Home() {
           username: username.trim(),
           serverIp: serverIP.trim(),
           version,
-          authMode
+          authMode: botAuthMode // Use botAuthMode here
         })
       });
 
@@ -543,7 +608,7 @@ export default function Home() {
         username: username.trim(),
         serverIp: serverIP.trim(),
         version,
-        authMode
+        authMode: botAuthMode // Use botAuthMode here
       });
 
       // Directly send the connect_bot message through the WebSocket
@@ -552,12 +617,12 @@ export default function Home() {
           type: 'connect_bot',
           data: {
             connectionId: connection.id,
-            username: connection.username,
-            serverIp: connection.serverIp,
-            version: connection.version,
-            authMode: authMode,
-            messageOnLoad: messageOnLoad,
-            messageOnLoadDelay: messageOnLoadDelay
+            username,
+            serverIp: serverIP,
+            version,
+            authMode: botAuthMode, // Use botAuthMode here
+            messageOnLoad: messageOnLoad.trim(),
+            messageOnLoadDelay
           }
         });
       }
@@ -958,42 +1023,74 @@ export default function Home() {
     }
   };
 
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          {authMode === 'login' ? (
+            <LoginForm 
+              onLogin={handleLogin}
+              onSwitchToRegister={() => setAuthMode('register')}
+            />
+          ) : (
+            <RegisterForm 
+              onRegister={handleLogin}
+              onSwitchToLogin={() => setAuthMode('login')}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100">
+    <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
-      <header className="bg-gray-800 border-b border-minecraft-dark-stone">
-        <div className="container mx-auto px-4 py-4">
+      <div className="bg-gray-800 border-b-4 border-minecraft-green shadow-lg">
+        <div className="container mx-auto px-4 py-6">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-minecraft-green rounded-lg flex items-center justify-center">
-                <Box className="text-white text-xl" />
+            <h1 className="text-3xl font-gaming font-bold text-minecraft-green flex items-center">
+              <Server className="mr-3 h-8 w-8" />
+              MineWithDawg v2
+            </h1>
+
+            <div className="flex items-center space-x-4">
+              <Badge variant="outline" className={`${wsConnected ? 'border-green-500 text-green-400' : 'border-red-500 text-red-400'}`}>
+                {wsConnected ? 'WebSocket Connected' : 'WebSocket Disconnected'}
+              </Badge>
+
+              <Badge variant="outline" className={`${connectionStatus.isConnected ? 'border-minecraft-green text-minecraft-green' : 'border-gray-500 text-gray-400'}`}>
+                {connectionStatus.isConnected ? `Connected as ${connectionStatus.username}` : 'Bot Offline'}
+              </Badge>
+
+              <div className="flex items-center space-x-2 text-sm text-gray-300">
+                <span>Welcome, {currentUser?.username}!</span>
+                <Dialog open={showLearnMore} onOpenChange={setShowLearnMore}>
+                  <DialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-minecraft-green text-minecraft-green hover:bg-minecraft-green hover:text-gray-900"
+                    >
+                      <BookOpen className="h-4 w-4 mr-1" />
+                      Learn More
+                    </Button>
+                  </DialogTrigger>
+                </Dialog>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleLogout}
+                  className="border-gray-600 text-gray-300 hover:bg-red-600 hover:text-white"
+                >
+                  <LogOut className="h-4 w-4 mr-1" />
+                  Logout
+                </Button>
               </div>
-              <div>
-                <h1 className="text-2xl font-gaming font-bold text-minecraft-green">MineWithDawg</h1>
-                <p className="text-sm text-gray-400">Made by doggo, for doggo V1.51</p>
-              </div>
-            </div>
-            <div className="flex items-center space-x-3">
-              <div className="flex items-center space-x-2">
-                <div className={`w-3 h-3 rounded-full animate-pulse ${
-                  connectionStatus.isConnected ? 'bg-status-online' : 'bg-status-offline'
-                }`} />
-                <span className="text-sm font-medium">
-                  {connectionStatus.isConnected ? 'Connected' : 'Offline'}
-                </span>
-              </div>
-              <Button
-                onClick={handleStartHelpSession}
-                variant="outline"
-                size="sm"
-                className="bg-blue-600 hover:bg-blue-700 border-blue-600 text-white"
-              >
-                Get Help
-              </Button>
             </div>
           </div>
         </div>
-      </header>
+      </div>
 
       <div className="container mx-auto px-4 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1009,8 +1106,8 @@ export default function Home() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <Label htmlFor="authMode" className="text-gray-300">Authentication Mode</Label>
-                  <Select value={authMode} onValueChange={setAuthMode} disabled={connectionStatus.isConnected}>
+                  <Label htmlFor="botAuthMode" className="text-gray-300">Authentication Mode</Label>
+                  <Select value={botAuthMode} onValueChange={setBotAuthMode} disabled={connectionStatus.isConnected}>
                     <SelectTrigger data-testid="select-auth-mode" className="bg-gray-700 border-gray-600 text-white focus:border-minecraft-green">
                       <SelectValue placeholder="Select authentication" />
                     </SelectTrigger>
@@ -1023,15 +1120,15 @@ export default function Home() {
 
                 <div>
                   <Label htmlFor="username" className="text-gray-300">
-                    {authMode === 'microsoft' ? 'Microsoft Email' : 'Username (Offline)'}
+                    {botAuthMode === 'microsoft' ? 'Microsoft Email' : 'Username (Offline)'}
                   </Label>
                   <Input
                     id="username"
                     data-testid="input-username"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    placeholder={authMode === 'microsoft' ? 'your-email@example.com' : 'Enter your username'}
-                    type={authMode === 'microsoft' ? 'email' : 'text'}
+                    placeholder={botAuthMode === 'microsoft' ? 'your-email@example.com' : 'Enter your username'}
+                    type={botAuthMode === 'microsoft' ? 'email' : 'text'}
                     className="bg-gray-700 border-gray-600 text-white focus:border-minecraft-green"
                     disabled={connectionStatus.isConnected}
                   />
@@ -1914,7 +2011,7 @@ export default function Home() {
             ) : (
               <div className="text-center space-y-4">
                 <div className="text-green-400 text-lg font-medium">Authentication Successful!</div>
-                <div className="text-gray-400 text-sm">Always Online mode is now enabled.</div>
+                <div className="text-gray-400 text-sm">{microsoftAuth.message}</div>
               </div>
             )}
           </div>
@@ -2072,6 +2169,409 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* Learn More Dialog */}
+      <Dialog open={showLearnMore} onOpenChange={setShowLearnMore}>
+        <DialogContent className="max-w-4xl max-h-[80vh] bg-gray-800 border-minecraft-dark-stone text-white">
+          <DialogHeader>
+            <DialogTitle className="text-2xl font-gaming text-minecraft-green flex items-center">
+              <BookOpen className="mr-2" />
+              About MineWithDawg v2
+            </DialogTitle>
+            <DialogDescription className="text-gray-400">
+              Everything you need to know about our free Minecraft bot service
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex gap-4 h-full">
+            {/* Sidebar Navigation */}
+            <div className="w-64 bg-gray-900 rounded-lg p-4">
+              <div className="space-y-2">
+                {[
+                  { id: 'overview', title: 'Overview', icon: Info },
+                  { id: 'mojang', title: 'Mojang Disclaimer', icon: Shield },
+                  { id: 'how-it-works', title: 'How It Works', icon: Settings },
+                  { id: 'privacy', title: 'Privacy Policy', icon: Eye },
+                  { id: 'safety', title: 'Account Safety', icon: Lock },
+                  { id: 'updates', title: 'Recent Updates', icon: Download },
+                  { id: 'developer', title: 'About Developer', icon: Users },
+                  { id: 'features', title: 'Features', icon: Package },
+                ].map((section) => {
+                  const IconComponent = section.icon;
+                  return (
+                    <Button
+                      key={section.id}
+                      onClick={() => setActiveLearnSection(section.id)}
+                      variant={activeLearnSection === section.id ? 'default' : 'ghost'}
+                      className={`w-full justify-start text-left ${
+                        activeLearnSection === section.id 
+                          ? 'bg-minecraft-green text-gray-900' 
+                          : 'text-gray-300 hover:bg-gray-700'
+                      }`}
+                    >
+                      <IconComponent className="h-4 w-4 mr-2" />
+                      {section.title}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Content Area */}
+            <ScrollArea className="flex-1 bg-gray-900 rounded-lg p-6">
+              {activeLearnSection === 'overview' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">Welcome to MineWithDawg v2</h3>
+                  <p className="text-gray-300">
+                    MineWithDawg is the first and best free Minecraft bot service that runs entirely through your web browser. 
+                    No downloads, no installations, no complex setup - just pure convenience.
+                  </p>
+                  <div className="bg-minecraft-green/10 border border-minecraft-green rounded-lg p-4">
+                    <h4 className="font-semibold text-minecraft-green mb-2">What makes us different?</h4>
+                    <ul className="space-y-1 text-gray-300">
+                      <li>• Completely free to use - no hidden fees or premium tiers</li>
+                      <li>• Web-based interface - works on any device with internet</li>
+                      <li>• Real-time bot control with live chat and logs</li>
+                      <li>• Multiple authentication modes (Offline & Microsoft)</li>
+                      <li>• Advanced features like auto-reconnect and movement controls</li>
+                    </ul>
+                  </div>
+                  <p className="text-gray-400 text-sm">
+                    Version 2.0 brings enhanced stability, improved UI, user authentication, and many more features!
+                  </p>
+                </div>
+              )}
+
+              {activeLearnSection === 'mojang' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">Mojang Disclaimer</h3>
+                  <div className="bg-yellow-900/20 border border-yellow-600 rounded-lg p-4">
+                    <h4 className="font-semibold text-yellow-400 mb-2 flex items-center">
+                      <AlertTriangle className="h-4 w-4 mr-2" />
+                      Important Notice
+                    </h4>
+                    <p className="text-gray-300">
+                      <strong>MineWithDawg is NOT affiliated with, endorsed by, or connected to Mojang AB, Microsoft Corporation, 
+                      or any official Minecraft services.</strong>
+                    </p>
+                  </div>
+                  <div className="space-y-3 text-gray-300">
+                    <p>
+                      Minecraft® is a trademark of Mojang AB and Microsoft Corporation. This service is an independent, 
+                      community-created tool that interacts with Minecraft servers through publicly available protocols.
+                    </p>
+                    <p>
+                      We respect Mojang's Terms of Service and encourage all users to:
+                    </p>
+                    <ul className="space-y-1 ml-4">
+                      <li>• Only use bots on servers where they are explicitly allowed</li>
+                      <li>• Follow all server rules and guidelines</li>
+                      <li>• Respect other players and fair gameplay</li>
+                      <li>• Not use bots for griefing, cheating, or malicious activities</li>
+                    </ul>
+                    <p className="text-yellow-400">
+                      Use this service responsibly and at your own risk. We are not responsible for any consequences 
+                      resulting from bot usage on third-party servers.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {activeLearnSection === 'how-it-works' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">How MineWithDawg Works</h3>
+                  <div className="space-y-4">
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2">1. Browser-Based Architecture</h4>
+                      <p className="text-gray-300">
+                        Our service runs entirely in your web browser using modern web technologies. When you connect a bot, 
+                        our servers create a Minecraft client that communicates with the target server on your behalf.
+                      </p>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2">2. Real-Time Communication</h4>
+                      <p className="text-gray-300">
+                        WebSocket connections provide instant communication between your browser and the bot. You can see 
+                        live chat messages, player movements, and server events in real-time.
+                      </p>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2">3. Advanced Bot Features</h4>
+                      <p className="text-gray-300">
+                        Control your bot with movement keys, send chat messages and commands, view inventory, monitor player lists, 
+                        and use advanced features like auto-reconnect and spam protection.
+                      </p>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2">4. Security & Privacy</h4>
+                      <p className="text-gray-300">
+                        Microsoft authentication is handled through official OAuth flows. We never store passwords and use 
+                        secure token-based authentication for all communications.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeLearnSection === 'privacy' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">Privacy Policy</h3>
+                  <div className="space-y-3 text-gray-300">
+                    <div className="bg-green-900/20 border border-green-600 rounded-lg p-4">
+                      <h4 className="font-semibold text-green-400 mb-2">Your Privacy Matters</h4>
+                      <p>We are committed to protecting your privacy and only collect the minimum data necessary to provide our service.</p>
+                    </div>
+                    <h4 className="font-semibold text-minecraft-green">What We Collect:</h4>
+                    <ul className="space-y-1 ml-4">
+                      <li>• Server connection details (IP addresses, usernames) for bot functionality</li>
+                      <li>• Chat messages and commands sent through the bot interface</li>
+                      <li>• Basic connection logs for debugging and service improvement</li>
+                      <li>• Anonymous usage statistics to understand feature popularity</li>
+                    </ul>
+                    <h4 className="font-semibold text-minecraft-green">What We DON'T Collect:</h4>
+                    <ul className="space-y-1 ml-4">
+                      <li>• Minecraft passwords (authentication handled by Microsoft)</li>
+                      <li>• Personal information beyond what you voluntarily provide</li>
+                      <li>• Data from servers you're not connected to through our service</li>
+                      <li>• Browser history or activities outside our service</li>
+                    </ul>
+                    <h4 className="font-semibold text-minecraft-green">Data Usage:</h4>
+                    <p>
+                      All collected data is used solely for providing bot functionality, debugging issues, and improving 
+                      the service. We never sell, rent, or share your data with third parties for marketing purposes.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {activeLearnSection === 'safety' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">Account Safety & Security</h3>
+                  <div className="space-y-4">
+                    <div className="bg-blue-900/20 border border-blue-600 rounded-lg p-4">
+                      <h4 className="font-semibold text-blue-400 mb-2 flex items-center">
+                        <Shield className="h-4 w-4 mr-2" />
+                        Microsoft Authentication
+                      </h4>
+                      <p className="text-gray-300">
+                        When using Microsoft authentication, you're redirected to official Microsoft servers. 
+                        We never see or store your Microsoft credentials.
+                      </p>
+                    </div>
+                    <h4 className="font-semibold text-minecraft-green">Best Practices:</h4>
+                    <ul className="space-y-2 text-gray-300">
+                      <li className="flex items-start">
+                        <CheckCircle2 className="h-4 w-4 text-green-400 mr-2 mt-0.5 flex-shrink-0" />
+                        <span>Use offline mode for testing on private servers</span>
+                      </li>
+                      <li className="flex items-start">
+                        <CheckCircle2 className="h-4 w-4 text-green-400 mr-2 mt-0.5 flex-shrink-0" />
+                        <span>Only connect to servers where bots are allowed</span>
+                      </li>
+                      <li className="flex items-start">
+                        <CheckCircle2 className="h-4 w-4 text-green-400 mr-2 mt-0.5 flex-shrink-0" />
+                        <span>Avoid sharing server credentials or sensitive information</span>
+                      </li>
+                      <li className="flex items-start">
+                        <CheckCircle2 className="h-4 w-4 text-green-400 mr-2 mt-0.5 flex-shrink-0" />
+                        <span>Log out when finished using the service</span>
+                      </li>
+                    </ul>
+                    <div className="bg-red-900/20 border border-red-600 rounded-lg p-4">
+                      <h4 className="font-semibold text-red-400 mb-2">Important Warnings:</h4>
+                      <ul className="space-y-1 text-gray-300">
+                        <li>• Never share your MineWithDawg account with others</li>
+                        <li>• Don't use bots on servers with anti-bot policies</li>
+                        <li>• Be aware that some servers may ban bot usage</li>
+                        <li>• Report any suspicious activity immediately</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeLearnSection === 'updates' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">Recent Updates & Changelog</h3>
+                  <div className="space-y-4">
+                    <div className="bg-minecraft-green/10 border border-minecraft-green rounded-lg p-4">
+                      <h4 className="font-semibold text-minecraft-green mb-2">Version 2.0 - The Complete Rebuild 🎉</h4>
+                      <p className="text-gray-400 text-sm mb-3">Released: January 2025</p>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Complete UI redesign with modern Minecraft-themed styling</li>
+                        <li>• User authentication system with login/register functionality</li>
+                        <li>• Server profile management - save and load your favorite servers</li>
+                        <li>• Enhanced bot controls with WASD movement and advanced features</li>
+                        <li>• Real-time player list and inventory management</li>
+                        <li>• Auto-spammer with anti-kick protection</li>
+                        <li>• Admin panel for bot management</li>
+                        <li>• Always-online mode for continuous bot operation</li>
+                        <li>• Improved error handling and connection stability</li>
+                        <li>• Microsoft authentication integration</li>
+                      </ul>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-gray-300 mb-2">Version 1.x - Legacy Features</h4>
+                      <p className="text-gray-400 text-sm mb-3">Previous versions (2024)</p>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Basic bot connectivity and chat functionality</li>
+                        <li>• Simple movement controls</li>
+                        <li>• Connection logging and debugging</li>
+                        <li>• WebSocket-based real-time communication</li>
+                      </ul>
+                    </div>
+                    <div className="bg-blue-900/20 border border-blue-600 rounded-lg p-4">
+                      <h4 className="font-semibold text-blue-400 mb-2">Coming Soon 🚀</h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Advanced bot scripting capabilities</li>
+                        <li>• Plugin system for custom bot behaviors</li>
+                        <li>• Multi-bot management</li>
+                        <li>• Enhanced server compatibility</li>
+                        <li>• Mobile app for on-the-go bot control</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeLearnSection === 'developer' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">About the Developer</h3>
+                  <div className="space-y-4">
+                    <div className="bg-minecraft-gold/10 border border-minecraft-gold rounded-lg p-4">
+                      <h4 className="font-semibold text-minecraft-gold mb-2">Created by Doggo 🐕</h4>
+                      <p className="text-gray-300">
+                        MineWithDawg was developed by a passionate Minecraft enthusiast who wanted to create 
+                        the first truly accessible, web-based Minecraft bot service that anyone could use for free.
+                      </p>
+                    </div>
+                    <h4 className="font-semibold text-minecraft-green">Why Was MineWithDawg Created?</h4>
+                    <div className="space-y-3 text-gray-300">
+                      <p>
+                        The idea for MineWithDawg came from personal frustration with existing bot solutions:
+                      </p>
+                      <ul className="space-y-1 ml-4">
+                        <li>• Most bot services require complex installations and technical knowledge</li>
+                        <li>• Many services charge premium fees for basic functionality</li>
+                        <li>• Existing solutions often lack user-friendly interfaces</li>
+                        <li>• There was no truly web-based bot service available</li>
+                      </ul>
+                      <p>
+                        The goal was simple: <strong>Create the first and best free Minecraft bot service that runs 
+                        entirely through the web, making bot functionality accessible to everyone.</strong>
+                      </p>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2">Fun Facts</h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Development started as a weekend project and grew into a full service</li>
+                        <li>• The name "MineWithDawg" combines "Minecraft" with "Dawg" (slang for friend/buddy)</li>
+                        <li>• Version 2.0 represents over 100 hours of development and testing</li>
+                        <li>• The service has been used by thousands of players worldwide</li>
+                        <li>• All development is done with love for the Minecraft community</li>
+                      </ul>
+                    </div>
+                    <div className="bg-green-900/20 border border-green-600 rounded-lg p-4">
+                      <h4 className="font-semibold text-green-400 mb-2">Our Mission</h4>
+                      <p className="text-gray-300">
+                        To provide the Minecraft community with free, accessible, and powerful bot tools while 
+                        respecting the game, its developers, and fellow players. We believe everyone should have 
+                        access to quality bot services without barriers.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {activeLearnSection === 'features' && (
+                <div className="space-y-4">
+                  <h3 className="text-xl font-semibold text-minecraft-green">Complete Feature List</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2 flex items-center">
+                        <Server className="h-4 w-4 mr-2" />
+                        Connection Features
+                      </h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Multiple Minecraft version support</li>
+                        <li>• Offline and Microsoft authentication</li>
+                        <li>• Auto-reconnect functionality</li>
+                        <li>• Connection status monitoring</li>
+                        <li>• Ping and latency tracking</li>
+                      </ul>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2 flex items-center">
+                        <MessageSquare className="h-4 w-4 mr-2" />
+                        Chat & Communication
+                      </h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Real-time chat messaging</li>
+                        <li>• Command execution support</li>
+                        <li>• Message history and logging</li>
+                        <li>• Quick command buttons</li>
+                        <li>• Message-on-load functionality</li>
+                      </ul>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2 flex items-center">
+                        <Gamepad2 className="h-4 w-4 mr-2" />
+                        Bot Control
+                      </h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• WASD movement controls</li>
+                        <li>• Jump and crouch functionality</li>
+                        <li>• Position tracking (X, Y, Z)</li>
+                        <li>• Inventory management</li>
+                        <li>• Item dropping capabilities</li>
+                      </ul>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2 flex items-center">
+                        <Users className="h-4 w-4 mr-2" />
+                        Player Management
+                      </h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Online player list</li>
+                        <li>• Player ping monitoring</li>
+                        <li>• Join/leave notifications</li>
+                        <li>• Player count tracking</li>
+                        <li>• Real-time player updates</li>
+                      </ul>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2 flex items-center">
+                        <Zap className="h-4 w-4 mr-2" />
+                        Advanced Features
+                      </h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• Auto-spammer with anti-kick</li>
+                        <li>• Always-online mode</li>
+                        <li>• Server profile saving</li>
+                        <li>• Admin bot management</li>
+                        <li>• Help chat system</li>
+                      </ul>
+                    </div>
+                    <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                      <h4 className="font-semibold text-minecraft-green mb-2 flex items-center">
+                        <Settings className="h-4 w-4 mr-2" />
+                        Technical Features
+                      </h4>
+                      <ul className="space-y-1 text-gray-300 text-sm">
+                        <li>• WebSocket real-time communication</li>
+                        <li>• Comprehensive error logging</li>
+                        <li>• Multi-tab support</li>
+                        <li>• Responsive design</li>
+                        <li>• Cross-platform compatibility</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </ScrollArea>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

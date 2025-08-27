@@ -1,20 +1,32 @@
-import { type User, type InsertUser, type BotConnection, type InsertBotConnection, type ChatMessage, type InsertChatMessage, type BotLog, type InsertBotLog } from "@shared/schema";
+import { type User, type InsertUser, type BotConnection, type InsertBotConnection, type ChatMessage, type InsertChatMessage, type BotLog, type InsertBotLog, type ServerProfile, type InsertServerProfile } from "@shared/schema";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { botConnections, chatMessages, botLogs, users, serverProfiles, type InsertBotConnection, type InsertChatMessage, type InsertBotLog, type InsertUser, type InsertServerProfile } from "@shared/schema";
+import { eq, desc } from "drizzle-orm";
+import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
-  
+  validateUser(username: string, password: string): Promise<User | null>;
+
+  getServerProfile(profileId: string): Promise<ServerProfile | undefined>;
+  getUserServerProfiles(userId: string): Promise<ServerProfile[]>;
+  createServerProfile(profileData: InsertServerProfile): Promise<ServerProfile>;
+  updateServerProfile(profileId: string, updates: Partial<InsertServerProfile>): Promise<ServerProfile | undefined>;
+  deleteServerProfile(profileId: string): Promise<void>;
+
   getBotConnection(id: string): Promise<BotConnection | undefined>;
   createBotConnection(connection: InsertBotConnection): Promise<BotConnection>;
   updateBotConnection(id: string, updates: Partial<BotConnection>): Promise<BotConnection | undefined>;
   deleteBotConnection(id: string): Promise<boolean>;
   getAllBotConnections(): Promise<BotConnection[]>;
-  
+
   getChatMessages(connectionId: string, limit?: number): Promise<ChatMessage[]>;
   createChatMessage(message: InsertChatMessage): Promise<ChatMessage>;
-  
+
   getBotLogs(connectionId: string, limit?: number): Promise<BotLog[]>;
   createBotLog(log: InsertBotLog): Promise<BotLog>;
 }
@@ -25,12 +37,7 @@ export class MemStorage implements IStorage {
   private chatMessages: Map<string, ChatMessage>;
   private botLogs: Map<string, BotLog>;
 
-  constructor() {
-    this.users = new Map();
-    this.botConnections = new Map();
-    this.chatMessages = new Map();
-    this.botLogs = new Map();
-  }
+  
 
   async getUser(id: string): Promise<User | undefined> {
     return this.users.get(id);
@@ -44,9 +51,71 @@ export class MemStorage implements IStorage {
 
   async createUser(insertUser: InsertUser): Promise<User> {
     const id = randomUUID();
-    const user: User = { ...insertUser, id };
+    const hashedPassword = await bcrypt.hash(insertUser.password, 10);
+    const user: User = { 
+      ...insertUser, 
+      id, 
+      password: hashedPassword 
+    };
     this.users.set(id, user);
     return user;
+  }
+
+  async validateUser(username: string, password: string): Promise<User | null> {
+    const user = await this.getUserByUsername(username);
+    if (!user) return null;
+
+    const isValid = await bcrypt.compare(password, user.password);
+    return isValid ? user : null;
+  }
+
+  private serverProfiles: Map<string, ServerProfile>;
+
+  constructor() {
+    this.users = new Map();
+    this.botConnections = new Map();
+    this.chatMessages = new Map();
+    this.botLogs = new Map();
+    this.serverProfiles = new Map();
+  }
+
+  async getServerProfile(profileId: string): Promise<ServerProfile | undefined> {
+    return this.serverProfiles.get(profileId);
+  }
+  
+  async getUserServerProfiles(userId: string): Promise<ServerProfile[]> {
+    return Array.from(this.serverProfiles.values()).filter(
+      profile => profile.userId === userId
+    );
+  }
+  
+  async createServerProfile(profileData: InsertServerProfile): Promise<ServerProfile> {
+    const id = randomUUID();
+    const profile: ServerProfile = {
+      ...profileData,
+      id,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.serverProfiles.set(id, profile);
+    return profile;
+  }
+  
+  async updateServerProfile(profileId: string, updates: Partial<InsertServerProfile>): Promise<ServerProfile | undefined> {
+    const profile = this.serverProfiles.get(profileId);
+    if (!profile) return undefined;
+
+    const updated = { 
+      ...profile, 
+      ...updates,
+      updatedAt: new Date()
+    };
+    this.serverProfiles.set(profileId, updated);
+    return updated;
+  }
+  
+  async deleteServerProfile(profileId: string): Promise<void> {
+    this.serverProfiles.delete(profileId);
   }
 
   async getBotConnection(id: string): Promise<BotConnection | undefined> {
@@ -69,7 +138,7 @@ export class MemStorage implements IStorage {
   async updateBotConnection(id: string, updates: Partial<BotConnection>): Promise<BotConnection | undefined> {
     const connection = this.botConnections.get(id);
     if (!connection) return undefined;
-    
+
     const updated = { ...connection, ...updates };
     this.botConnections.set(id, updated);
     return updated;

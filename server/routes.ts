@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { insertBotConnectionSchema, insertChatMessageSchema, insertBotLogSchema } from "@shared/schema";
+import { insertBotConnectionSchema, insertChatMessageSchema, insertBotLogSchema, insertUserSchema, insertServerProfileSchema } from "@shared/schema";
 import { ZodError } from "zod";
 import { Client, GatewayIntentBits, TextChannel, ChannelType } from 'discord.js';
 
@@ -78,6 +78,99 @@ if (DISCORD_TOKEN && DISCORD_GUILD_ID) {
 
 export async function registerRoutes(app: Express): Promise<Server> {
   console.log('Mineflayer loaded successfully');
+  
+  // Authentication routes
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const userData = insertUserSchema.parse(req.body);
+      
+      // Check if user already exists
+      const existingUser = await storage.getUserByUsername(userData.username);
+      if (existingUser) {
+        return res.status(400).json({ message: "Username already exists" });
+      }
+      
+      const user = await storage.createUser(userData);
+      res.json({ id: user.id, username: user.username });
+    } catch (error) {
+      if (error instanceof ZodError) {
+        res.status(400).json({ message: "Invalid user data", errors: error.errors });
+      } else {
+        res.status(500).json({ message: "Failed to register user" });
+      }
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      const user = await storage.validateUser(username, password);
+      
+      if (!user) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
+      
+      res.json({ id: user.id, username: user.username });
+    } catch (error) {
+      res.status(500).json({ message: "Login failed" });
+    }
+  });
+
+  // Server Profile routes
+  app.post("/api/profiles", async (req, res) => {
+    try {
+      const profileData = insertServerProfileSchema.parse(req.body);
+      const profile = await storage.createServerProfile(profileData);
+      res.json(profile);
+    } catch (error) {
+      if (error instanceof ZodError) {
+        res.status(400).json({ message: "Invalid profile data", errors: error.errors });
+      } else {
+        res.status(500).json({ message: "Failed to create profile" });
+      }
+    }
+  });
+
+  app.get("/api/profiles/user/:userId", async (req, res) => {
+    try {
+      const profiles = await storage.getUserServerProfiles(req.params.userId);
+      res.json(profiles);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to get profiles" });
+    }
+  });
+
+  app.get("/api/profiles/:id", async (req, res) => {
+    try {
+      const profile = await storage.getServerProfile(req.params.id);
+      if (!profile) {
+        return res.status(404).json({ message: "Profile not found" });
+      }
+      res.json(profile);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to get profile" });
+    }
+  });
+
+  app.put("/api/profiles/:id", async (req, res) => {
+    try {
+      const updates = insertServerProfileSchema.partial().parse(req.body);
+      const profile = await storage.updateServerProfile(req.params.id, updates);
+      res.json(profile);
+    } catch (error) {
+      res.status(500).json({ message: "Failed to update profile" });
+    }
+  });
+
+  app.delete("/api/profiles/:id", async (req, res) => {
+    try {
+      await storage.deleteServerProfile(req.params.id);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to delete profile" });
+    }
+  });
+
   // API Routes
   app.post("/api/connections", async (req, res) => {
     try {
@@ -275,13 +368,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const { connectionId, username, serverIp, version, authMode, messageOnLoad, messageOnLoadDelay } = data;
       const [host, port] = serverIp.split(':');
       
-      // Configure bot based on auth mode
+      // Configure bot based on auth mode with improved timeout and stability settings
       const botConfig: any = {
         host: host,
         port: port ? parseInt(port) : 25565,
         username: username,
         version: version,
-        auth: authMode === 'microsoft' ? 'microsoft' : 'offline'
+        auth: authMode === 'microsoft' ? 'microsoft' : 'offline',
+        // Improved connection stability settings
+        connectTimeout: 60000, // 60 second connection timeout
+        keepAlive: true,
+        keepAliveInitialDelay: 30000, // 30 seconds
+        skipValidation: true, // Skip validation for laggy servers
+        hideErrors: false,
+        // Handle laggy servers better
+        physicsEnabled: false, // Disable physics for better performance on laggy servers
+        chatLengthLimit: 100 // Limit chat message length
       };
 
       // If Microsoft auth, set up authentication flow
@@ -379,7 +481,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       bot.on('error', (error: any) => {
         console.log('Bot error:', error);
         
-        // Don't crash on various known error types
+        // Don't crash on various known error types including lag-related errors
         if (error.message && (
           error.message.includes('unknown chat format code') ||
           error.message.includes('Cannot read properties of undefined') ||
@@ -387,7 +489,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           error.message.includes('physics') ||
           error.message.includes('explosion') ||
           error.message.includes('partial packet') ||
-          error.message.includes('client timed out')
+          error.message.includes('client timed out') ||
+          error.message.includes('PartialReadError') ||
+          error.message.includes('Read error') ||
+          error.message.includes('ECONNRESET') ||
+          error.message.includes('ETIMEDOUT') ||
+          error.message.includes('socket hang up')
         )) {
           ws.send(JSON.stringify({
             type: 'bot_error',
