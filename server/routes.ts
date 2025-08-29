@@ -41,10 +41,22 @@ const activeHelpSessions = new Map<string, HelpSession>();
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
 
+// Microsoft authentication session management
+interface MicrosoftSession {
+  email: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+  deviceId: string;
+  createdAt: Date;
+}
+
+const activeMicrosoftSessions = new Map<string, MicrosoftSession>();
+
 // Initialize Discord bot
 if (DISCORD_TOKEN && DISCORD_GUILD_ID) {
   discordClient.login(DISCORD_TOKEN);
-  
+
   discordClient.on('ready', () => {
     console.log(`Discord bot logged in as ${discordClient.user?.tag}`);
   });
@@ -78,18 +90,77 @@ if (DISCORD_TOKEN && DISCORD_GUILD_ID) {
 
 export async function registerRoutes(app: Express): Promise<Server> {
   console.log('Mineflayer loaded successfully');
-  
+
+  // Microsoft Authentication session routes
+  app.post("/api/auth/microsoft/verify", async (req, res) => {
+    try {
+      const { sessionToken } = req.body;
+
+      const session = activeMicrosoftSessions.get(sessionToken);
+      if (!session) {
+        return res.status(401).json({ message: "Invalid or expired session" });
+      }
+
+      // Check if session is expired
+      if (new Date() > session.expiresAt) {
+        activeMicrosoftSessions.delete(sessionToken);
+        return res.status(401).json({ message: "Session expired" });
+      }
+
+      res.json({ 
+        email: session.email,
+        isValid: true,
+        expiresAt: session.expiresAt
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Session verification failed" });
+    }
+  });
+
+  app.post("/api/auth/microsoft/refresh", async (req, res) => {
+    try {
+      const { sessionToken } = req.body;
+
+      const session = activeMicrosoftSessions.get(sessionToken);
+      if (!session) {
+        return res.status(401).json({ message: "Invalid session" });
+      }
+
+      // Extend session by 1 hour
+      session.expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+      res.json({ 
+        sessionToken,
+        expiresAt: session.expiresAt
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Session refresh failed" });
+    }
+  });
+
+  app.post("/api/auth/microsoft/logout", async (req, res) => {
+    try {
+      const { sessionToken } = req.body;
+
+      activeMicrosoftSessions.delete(sessionToken);
+
+      res.json({ message: "Session terminated" });
+    } catch (error) {
+      res.status(500).json({ message: "Logout failed" });
+    }
+  });
+
   // Authentication routes
   app.post("/api/auth/register", async (req, res) => {
     try {
       const userData = insertUserSchema.parse(req.body);
-      
+
       // Check if user already exists
       const existingUser = await storage.getUserByUsername(userData.username);
       if (existingUser) {
         return res.status(400).json({ message: "Username already exists" });
       }
-      
+
       const user = await storage.createUser(userData);
       res.json({ id: user.id, username: user.username });
     } catch (error) {
@@ -105,11 +176,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { username, password } = req.body;
       const user = await storage.validateUser(username, password);
-      
+
       if (!user) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
-      
+
       res.json({ id: user.id, username: user.username });
     } catch (error) {
       res.status(500).json({ message: "Login failed" });
@@ -233,14 +304,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const connectionId = req.params.id;
       const botInstance = activeBots.get(connectionId);
-      
+
       if (botInstance) {
         if (botInstance.bot) {
           botInstance.bot.quit();
         }
         activeBots.delete(connectionId);
         await storage.updateBotConnection(connectionId, { isConnected: false });
-        
+
         // Notify the WebSocket client
         if (botInstance.ws && botInstance.ws.readyState === WebSocket.OPEN) {
           botInstance.ws.send(JSON.stringify({ 
@@ -249,7 +320,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }));
         }
       }
-      
+
       res.json({ success: true, message: "Bot terminated successfully" });
     } catch (error) {
       res.status(500).json({ message: "Failed to terminate bot" });
@@ -276,7 +347,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     ws.on('close', () => {
       console.log('WebSocket client disconnected');
-      
+
       // Cleanup help sessions
       for (const [sessionId, helpSession] of activeHelpSessions.entries()) {
         if (helpSession.clientWs === ws) {
@@ -284,7 +355,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           break;
         }
       }
-      
+
       // Cleanup any bots associated with this connection, unless Always Online is enabled
       for (const [connectionId, botInstance] of activeBots.entries()) {
         if (botInstance.ws === ws) {
@@ -365,9 +436,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
 
     try {
-      const { connectionId, username, serverIp, version, authMode, messageOnLoad, messageOnLoadDelay } = data;
+      const { connectionId, username, serverIp, version, authMode, messageOnLoad, messageOnLoadDelay, sessionToken } = data;
       const [host, port] = serverIp.split(':');
-      
+
       // Configure bot based on auth mode with improved timeout and stability settings
       const botConfig: any = {
         host: host,
@@ -375,34 +446,71 @@ export async function registerRoutes(app: Express): Promise<Server> {
         username: username,
         version: version,
         auth: authMode === 'microsoft' ? 'microsoft' : 'offline',
-        // Improved connection stability settings
-        connectTimeout: 60000, // 60 second connection timeout
+        // Enhanced connection stability settings for high-lag servers
+        connectTimeout: 120000, // 2 minute connection timeout for very laggy servers
         keepAlive: true,
-        keepAliveInitialDelay: 30000, // 30 seconds
+        keepAliveInitialDelay: 60000, // 1 minute for very laggy servers
         skipValidation: true, // Skip validation for laggy servers
         hideErrors: false,
         // Handle laggy servers better
-        physicsEnabled: false, // Disable physics for better performance on laggy servers
-        chatLengthLimit: 100 // Limit chat message length
+        physicsEnabled: false, // Disable physics for better performance
+        chatLengthLimit: 100, // Limit chat message length
+        // Additional settings for high-lag environments
+        checkTimeoutInterval: 60000, // Check for timeouts every minute
+        closeTimeout: 120000, // Wait 2 minutes before considering connection lost
+        writeInterval: 1000, // Slow down packet writing for laggy servers
+        // Compression settings
+        compressionThreshold: 256 // Higher threshold for laggy servers
       };
 
-      // If Microsoft auth, set up authentication flow
+      // If Microsoft auth, check for existing session or initiate new authentication
       if (authMode === 'microsoft') {
-        ws.send(JSON.stringify({
-          type: 'auth_status',
-          data: {
-            status: 'starting_auth',
-            message: 'Starting Microsoft authentication...'
+        let useExistingSession = false;
+
+        // Check if session token is provided and valid
+        if (sessionToken) {
+          const session = activeMicrosoftSessions.get(sessionToken);
+          if (session && new Date() <= session.expiresAt && username === session.email) {
+            // Valid existing session - use it
+            useExistingSession = true;
+
+            ws.send(JSON.stringify({
+              type: 'auth_status',
+              data: {
+                status: 'using_existing_session',
+                message: 'Using existing Microsoft authentication session...'
+              }
+            }));
+
+            await storage.createBotLog({
+              connectionId,
+              logLevel: 'info',
+              message: `Using existing Microsoft session for ${username}`
+            });
+          } else if (session && new Date() > session.expiresAt) {
+            // Session expired - remove it
+            activeMicrosoftSessions.delete(sessionToken);
           }
-        }));
+        }
 
-        await storage.createBotLog({
-          connectionId,
-          logLevel: 'info',
-          message: `Starting Microsoft authentication for ${username}`
-        });
+        if (!useExistingSession) {
+          // No valid session - initiate new authentication
+          ws.send(JSON.stringify({
+            type: 'auth_status',
+            data: {
+              status: 'starting_auth',
+              message: 'Starting Microsoft authentication...'
+            }
+          }));
 
-        // Add authentication flow event handler
+          await storage.createBotLog({
+            connectionId,
+            logLevel: 'info',
+            message: `Starting Microsoft authentication for ${username}`
+          });
+        }
+
+        // Add authentication flow event handlers
         botConfig.onMsaCode = (data: any) => {
           // Send the verification URL and user code to the frontend
           ws.send(JSON.stringify({
@@ -421,7 +529,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
             message: `Microsoft auth code generated: ${data.user_code} - Visit: ${data.verification_uri}`
           });
         };
-        
+
+        // Handle authentication success
+        botConfig.onMsaToken = (tokenData: any) => {
+          // Create secure session token
+          const newSessionToken = `ms_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+          const deviceId = `device_${Math.random().toString(36).substring(7)}`;
+
+          // Store session with limited lifetime (1 hour)
+          const session: MicrosoftSession = {
+            email: username,
+            accessToken: tokenData.access_token,
+            refreshToken: tokenData.refresh_token,
+            expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+            deviceId,
+            createdAt: new Date()
+          };
+
+          activeMicrosoftSessions.set(newSessionToken, session);
+
+          ws.send(JSON.stringify({
+            type: 'microsoft_session_created',
+            data: {
+              sessionToken: newSessionToken,
+              email: username,
+              expiresAt: session.expiresAt
+            }
+          }));
+
+          storage.createBotLog({
+            connectionId,
+            logLevel: 'info',
+            message: `Microsoft session created for ${username}`
+          });
+        };
+
         // Handle authentication errors
         botConfig.onMsaError = (error: any) => {
           console.error('Microsoft auth error:', error);
@@ -429,7 +571,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             type: 'connection_error',
             message: `Microsoft authentication failed: ${error.message || 'Please try again'}`
           }));
-          
+
           storage.createBotLog({
             connectionId,
             logLevel: 'error',
@@ -437,7 +579,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
         };
       }
-      
+
       const bot = mineflayer.createBot(botConfig);
 
       // Add comprehensive error handling for bot events
@@ -447,7 +589,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           return originalEmit.apply(this, [event, ...args]);
         } catch (error: any) {
           console.log('Caught bot event error:', error);
-          
+
           // Handle various known error types gracefully
           if (error.message && (
             error.message.includes('unknown chat format code') ||
@@ -462,13 +604,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
               type: 'bot_error',
               message: 'Packet parsing error - bot continuing to run'
             }));
-            
+
             storage.createBotLog({
               connectionId,
               logLevel: 'warning',
               message: `Packet error handled: ${error.message}`
             });
-            
+
             return false;
           }
           throw error;
@@ -480,7 +622,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Handle general bot errors
       bot.on('error', (error: any) => {
         console.log('Bot error:', error);
-        
+
         // Don't crash on various known error types including lag-related errors
         if (error.message && (
           error.message.includes('unknown chat format code') ||
@@ -500,7 +642,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             type: 'bot_error',
             message: 'Server compatibility error - bot continuing to run'
           }));
-          
+
           storage.createBotLog({
             connectionId,
             logLevel: 'warning',
@@ -508,7 +650,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
           return;
         }
-        
+
         ws.send(JSON.stringify({
           type: 'bot_error',
           message: `Bot error: ${error.message || 'Unknown error'}`
@@ -518,7 +660,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Add uncaught exception handler specifically for this bot
       const handleUncaughtException = (error: any) => {
         console.log('Uncaught exception in bot process:', error);
-        
+
         if (error.message && (
           error.message.includes('unknown chat format code') ||
           error.message.includes('Cannot read properties of undefined') ||
@@ -532,7 +674,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             type: 'bot_error',
             message: 'Server compatibility error - bot continuing to run'
           }));
-          
+
           storage.createBotLog({
             connectionId,
             logLevel: 'warning',
@@ -540,7 +682,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           });
           return;
         }
-        
+
         // For other uncaught exceptions, still try to keep the bot running
         ws.send(JSON.stringify({
           type: 'bot_error',
@@ -549,7 +691,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       };
 
       process.on('uncaughtException', handleUncaughtException);
-      
+
       // Clean up the handler when bot disconnects
       bot.on('end', () => {
         process.removeListener('uncaughtException', handleUncaughtException);
@@ -581,14 +723,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
           logLevel: 'info',
           message: `Bot ${username} successfully logged into server using ${authMode} authentication`
         });
-        
+
         // Get server info
         const serverInfo = {
           version: bot.version,
           players: `${Object.keys(bot.players).length}/${bot.game?.maxPlayers || 20}`,
           maxPlayers: bot.game?.maxPlayers || 20
         };
-        
+
         ws.send(JSON.stringify({ 
           type: 'bot_connected', 
           data: { 
@@ -600,7 +742,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             messageOnLoadDelay: data.messageOnLoadDelay
           } 
         }));
-        
+
         // Send server info update
         ws.send(JSON.stringify({
           type: 'server_info_update',
@@ -610,14 +752,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
             motd: "Connected"
           }
         }));
-        
+
         // Send initial players list
         const playersList = Object.values(bot.players).map((player: any) => ({
           uuid: player.uuid,
           username: player.username,
           ping: player.ping
         }));
-        
+
         ws.send(JSON.stringify({
           type: 'players_update',
           data: {
@@ -625,7 +767,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             maxPlayers: serverInfo.maxPlayers
           }
         }));
-        
+
         // Send initial position
         if (bot.entity) {
           ws.send(JSON.stringify({
@@ -644,7 +786,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             try {
               const messageToSend = data.messageOnLoad.trim();
               bot.chat(messageToSend);
-              
+
               const isCommand = messageToSend.startsWith('/');
               storage.createChatMessage({
                 connectionId,
@@ -653,7 +795,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 messageType: isCommand ? 'console' : 'chat',
                 isCommand: isCommand
               });
-              
+
               storage.createBotLog({
                 connectionId,
                 logLevel: 'info',
@@ -681,7 +823,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             messageType: 'chat',
             isCommand: false
           });
-          
+
           ws.send(JSON.stringify({ 
             type: 'chat_message', 
             data: chatMessage 
@@ -692,10 +834,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       // Handle system messages (server messages, join/leave, etc.)
+      const recentMessages = new Set<string>();
+      const MESSAGE_DEDUPE_TIME = 1000; // 1 second
+
       bot.on('message', async (jsonMsg: any) => {
         try {
           let message: string;
-          
+
           // Handle different message formats safely
           if (typeof jsonMsg === 'string') {
             message = jsonMsg;
@@ -706,28 +851,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
           } else {
             message = '[Unable to parse message]';
           }
-          
+
+          // Clean up message and create unique key for deduplication
+          const cleanMessage = message.trim();
+          const messageKey = `${cleanMessage}_${Math.floor(Date.now() / MESSAGE_DEDUPE_TIME)}`;
+
+          // Skip if we've seen this message recently (prevents duplicates)
+          if (recentMessages.has(messageKey)) {
+            return;
+          }
+
           // Filter out regular chat messages and empty messages
           // Skip messages that:
           // - Start with '<' (regular chat format)
           // - Contain '»' (formatted chat messages) 
           // - Contain '[Player]' (player chat indicators)
-          // - Are empty
-          if (message && 
-              !message.startsWith('<') && 
-              !message.includes('»') && 
-              !message.includes('[Player]') &&
-              !message.match(/\[\d{2}:\d{2}:\d{2}\]\[Server\]\[Player\]/) &&
-              message.trim() !== '') {
-            
+          // - Are empty or just whitespace
+          // - Are duplicate join/leave messages
+          if (cleanMessage && 
+              !cleanMessage.startsWith('<') && 
+              !cleanMessage.includes('»') && 
+              !cleanMessage.includes('[Player]') &&
+              !cleanMessage.match(/\[\d{2}:\d{2}:\d{2}\]\[Server\]\[Player\]/) &&
+              !cleanMessage.match(/^\s*$/)) {
+
+            // Add to recent messages set and clean up old entries
+            recentMessages.add(messageKey);
+            setTimeout(() => recentMessages.delete(messageKey), MESSAGE_DEDUPE_TIME);
+
             const systemMessage = await storage.createChatMessage({
               connectionId,
               username: 'Server',
-              message,
+              message: cleanMessage,
               messageType: 'system',
               isCommand: false
             });
-            
+
             ws.send(JSON.stringify({ 
               type: 'chat_message', 
               data: systemMessage 
@@ -735,20 +894,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         } catch (error) {
           console.log('Message parsing error:', error);
-          
-          // Still try to log something for debugging
-          const fallbackMessage = await storage.createChatMessage({
-            connectionId,
-            username: 'Server',
-            message: '[Message parsing failed]',
-            messageType: 'system',
-            isCommand: false
-          });
-          
-          ws.send(JSON.stringify({ 
-            type: 'chat_message', 
-            data: fallbackMessage 
-          }));
+          // Don't send fallback messages to reduce spam during parsing errors
         }
       });
 
@@ -761,19 +907,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           messageType: 'join',
           isCommand: false
         });
-        
+
         ws.send(JSON.stringify({ 
           type: 'chat_message', 
           data: joinMessage 
         }));
-        
+
         // Update players list
         const playersList = Object.values(bot.players).map((p: any) => ({
           uuid: p.uuid,
           username: p.username,
           ping: p.ping
         }));
-        
+
         ws.send(JSON.stringify({
           type: 'players_update',
           data: {
@@ -791,19 +937,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           messageType: 'leave',
           isCommand: false
         });
-        
+
         ws.send(JSON.stringify({ 
           type: 'chat_message', 
           data: leaveMessage 
         }));
-        
+
         // Update players list
         const playersList = Object.values(bot.players).map((p: any) => ({
           uuid: p.uuid,
           username: p.username,
           ping: p.ping
         }));
-        
+
         ws.send(JSON.stringify({
           type: 'players_update',
           data: {
@@ -822,7 +968,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           messageType: 'death',
           isCommand: false
         });
-        
+
         ws.send(JSON.stringify({ 
           type: 'chat_message', 
           data: deathMessage 
@@ -844,22 +990,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       bot.on('end', async (reason?: string) => {
         const botInstance = activeBots.get(connectionId);
-        
+
         await storage.updateBotConnection(connectionId, { isConnected: false });
-        
+
         let disconnectReason = reason || 'Connection ended';
         let logMessage = `Bot ${username} disconnected from server`;
-        
+
         if (reason) {
           logMessage += ` - Reason: ${reason}`;
         }
-        
+
         await storage.createBotLog({
           connectionId,
           logLevel: 'warning',
           message: logMessage
         });
-        
+
         // Check if Always Online is enabled and attempt reconnection
         if (botInstance?.alwaysOnline && !reason?.includes('kicked')) {
           await storage.createBotLog({
@@ -867,7 +1013,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             logLevel: 'info',
             message: 'Always Online mode active - attempting auto-reconnection in 3 seconds'
           });
-          
+
           setTimeout(async () => {
             try {
               await handleBotReconnect(connectionId, { username, serverIp, version, host, port });
@@ -877,7 +1023,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 logLevel: 'error',
                 message: `Always Online reconnection failed: ${error instanceof Error ? error.message : 'Unknown error'}`
               });
-              
+
               // Try again in 10 seconds
               setTimeout(async () => {
                 try {
@@ -895,7 +1041,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         } else {
           activeBots.delete(connectionId);
         }
-        
+
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ 
             type: 'bot_disconnected', 
@@ -915,7 +1061,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           logLevel: 'warning',
           message: `Bot ${username} was kicked: ${kickReason}`
         });
-        
+
         ws.send(JSON.stringify({ 
           type: 'bot_disconnected', 
           data: { 
@@ -925,18 +1071,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }));
       });
 
-      // Send ping, position, and server info updates
+      // Send ping, position, and server info updates with adaptive frequency
+      let updateFrequency = 5000; // Start with 5 second updates for laggy servers
+
       const updateInterval = setInterval(() => {
         if (bot.player && ws.readyState === WebSocket.OPEN) {
           const ping = bot.player.ping || 0;
+
+          // Adjust update frequency based on ping
+          if (ping > 10000) { // Very high lag (10+ seconds)
+            updateFrequency = 10000; // Update every 10 seconds
+          } else if (ping > 5000) { // High lag (5+ seconds)
+            updateFrequency = 7000; // Update every 7 seconds
+          } else if (ping > 1000) { // Medium lag (1+ seconds)
+            updateFrequency = 5000; // Update every 5 seconds
+          } else {
+            updateFrequency = 3000; // Normal frequency
+          }
+
           storage.updateBotConnection(connectionId, { lastPing: ping });
           ws.send(JSON.stringify({ 
             type: 'ping_update', 
             data: { ping } 
           }));
-          
-          // Send position update
-          if (bot.entity) {
+
+          // Send position update (less frequent for laggy servers)
+          if (bot.entity && ping < 5000) {
             ws.send(JSON.stringify({
               type: 'position_update',
               data: {
@@ -946,33 +1106,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
               }
             }));
           }
-          
-          // Send updated server info and players list
-          const playersList = Object.values(bot.players).map((player: any) => ({
-            uuid: player.uuid,
-            username: player.username,
-            ping: player.ping
-          }));
-          
-          ws.send(JSON.stringify({
-            type: 'server_info_update',
-            data: {
-              version: bot.version,
-              players: `${playersList.length}/${bot.game?.maxPlayers || 20}`,
-              motd: "Connected"
-            }
-          }));
-          
-          ws.send(JSON.stringify({
-            type: 'players_update',
-            data: {
-              players: playersList,
-              maxPlayers: bot.game?.maxPlayers || 20
-            }
-          }));
+
+          // Send updated server info and players list (less frequent for very laggy servers)
+          if (ping < 10000) {
+            const playersList = Object.values(bot.players).map((player: any) => ({
+              uuid: player.uuid,
+              username: player.username,
+              ping: player.ping
+            }));
+
+            ws.send(JSON.stringify({
+              type: 'server_info_update',
+              data: {
+                version: bot.version,
+                players: `${playersList.length}/${bot.game?.maxPlayers || 20}`,
+                motd: ping > 5000 ? "High Lag" : "Connected"
+              }
+            }));
+
+            ws.send(JSON.stringify({
+              type: 'players_update',
+              data: {
+                players: playersList,
+                maxPlayers: bot.game?.maxPlayers || 20
+              }
+            }));
+          }
         }
-      }, 3000);
-      
+      }, updateFrequency);
+
       // Cleanup interval on bot end
       bot.on('end', () => {
         clearInterval(updateInterval);
@@ -995,7 +1157,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleBotDisconnect(ws: WebSocket, data: any) {
     const { connectionId } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance) {
       if (botInstance.bot) {
         botInstance.bot.quit();
@@ -1008,10 +1170,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleSendChat(ws: WebSocket, data: any) {
     const { connectionId, message } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance && botInstance.bot) {
       botInstance.bot.chat(message);
-      
+
       // Store the message
       await storage.createChatMessage({
         connectionId,
@@ -1020,7 +1182,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         messageType: 'chat',
         isCommand: false
       });
-      
+
       await storage.createBotLog({
         connectionId,
         logLevel: 'info',
@@ -1032,10 +1194,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleSendCommand(ws: WebSocket, data: any) {
     const { connectionId, command } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance && botInstance.bot) {
       botInstance.bot.chat(command);
-      
+
       // Store the command
       await storage.createChatMessage({
         connectionId,
@@ -1044,7 +1206,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         messageType: 'console',
         isCommand: true
       });
-      
+
       await storage.createBotLog({
         connectionId,
         logLevel: 'info',
@@ -1056,10 +1218,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleBotMovement(ws: WebSocket, data: any) {
     const { connectionId, direction, action } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance && botInstance.bot) {
       const bot = botInstance.bot;
-      
+
       try {
         switch (direction) {
           case 'forward':
@@ -1094,14 +1256,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleGetInventory(ws: WebSocket, data: any) {
     const { connectionId } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance && botInstance.bot) {
       const bot = botInstance.bot;
-      
+
       try {
         // Get the bot's inventory as a simple list
         const inventoryItems = [];
-        
+
         // Check all inventory slots
         if (bot.inventory && bot.inventory.slots) {
           for (let i = 0; i < bot.inventory.slots.length; i++) {
@@ -1116,7 +1278,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }
         }
-        
+
         ws.send(JSON.stringify({
           type: 'inventory_update',
           data: { 
@@ -1124,13 +1286,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             totalItems: inventoryItems.length
           }
         }));
-        
+
         await storage.createBotLog({
           connectionId,
           logLevel: 'info',
           message: `Retrieved inventory: ${inventoryItems.length} items`
         });
-        
+
       } catch (error) {
         console.error('Inventory error:', error);
         await storage.createBotLog({
@@ -1138,7 +1300,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           logLevel: 'error',
           message: `Failed to retrieve inventory: ${error instanceof Error ? error.message : 'Unknown error'}`
         });
-        
+
         // Send empty inventory on error
         ws.send(JSON.stringify({
           type: 'inventory_update',
@@ -1151,16 +1313,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleEnableAlwaysOnline(ws: WebSocket, data: any) {
     const { connectionId } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance) {
       botInstance.alwaysOnline = true;
-      
+
       await storage.createBotLog({
         connectionId,
         logLevel: 'info',
         message: 'Always Online mode enabled - bot will persist connections'
       });
-      
+
       ws.send(JSON.stringify({
         type: 'always_online_enabled',
         data: { connectionId }
@@ -1171,16 +1333,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleDisableAlwaysOnline(ws: WebSocket, data: any) {
     const { connectionId } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance) {
       botInstance.alwaysOnline = false;
-      
+
       await storage.createBotLog({
         connectionId,
         logLevel: 'info',
         message: 'Always Online mode disabled'
       });
-      
+
       ws.send(JSON.stringify({
         type: 'always_online_disabled',
         data: { connectionId }
@@ -1191,24 +1353,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleDropItem(ws: WebSocket, data: any) {
     const { connectionId, slot } = data;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (botInstance && botInstance.bot) {
       const bot = botInstance.bot;
-      
+
       try {
         // Check if slot has an item
         if (bot.inventory && bot.inventory.slots[slot]) {
           const item = bot.inventory.slots[slot];
-          
+
           // Drop the item
           await bot.toss(slot, item.count);
-          
+
           await storage.createBotLog({
             connectionId,
             logLevel: 'info',
             message: `Dropped item from slot ${slot}: ${item.name} x${item.count}`
           });
-          
+
           ws.send(JSON.stringify({
             type: 'item_dropped',
             data: { 
@@ -1217,7 +1379,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               count: item.count
             }
           }));
-          
+
         } else {
           await storage.createBotLog({
             connectionId,
@@ -1225,7 +1387,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             message: `No item found in slot ${slot} to drop`
           });
         }
-        
+
       } catch (error) {
         console.error('Drop item error:', error);
         await storage.createBotLog({
@@ -1233,7 +1395,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           logLevel: 'error',
           message: `Failed to drop item from slot ${slot}: ${error instanceof Error ? error.message : 'Unknown error'}`
         });
-        
+
         ws.send(JSON.stringify({
           type: 'drop_item_error',
           data: { 
@@ -1248,9 +1410,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleBotReconnect(connectionId: string, connectionData: any) {
     const { username, serverIp, version, host, port } = connectionData;
     const botInstance = activeBots.get(connectionId);
-    
+
     if (!botInstance) return;
-    
+
     const newBot = mineflayer.createBot({
       host: host,
       port: port ? parseInt(port) : 25565,
@@ -1261,10 +1423,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     // Update bot instance
     botInstance.bot = newBot;
-    
+
     // Setup all event handlers for the new bot
     setupAllBotEventHandlers(newBot, connectionId, username, botInstance.ws);
-    
+
     await storage.createBotLog({
       connectionId,
       logLevel: 'info',
@@ -1276,7 +1438,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // Handle general bot errors
     bot.on('error', (error: any) => {
       console.log('Bot error:', error);
-      
+
       if (error.message && (
         error.message.includes('unknown chat format code') ||
         error.message.includes('Cannot read properties of undefined') ||
@@ -1292,7 +1454,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             message: 'Server compatibility error - bot continuing to run'
           }));
         }
-        
+
         storage.createBotLog({
           connectionId,
           logLevel: 'warning',
@@ -1300,7 +1462,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
         return;
       }
-      
+
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'bot_error',
@@ -1316,13 +1478,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         logLevel: 'info',
         message: `Bot ${username} successfully reconnected to server`
       });
-      
+
       const serverInfo = {
         version: bot.version,
         players: `${Object.keys(bot.players).length}/${bot.game?.maxPlayers || 20}`,
         maxPlayers: bot.game?.maxPlayers || 20
       };
-      
+
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ 
           type: 'bot_connected', 
@@ -1333,7 +1495,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             players: serverInfo.players
           } 
         }));
-        
+
         ws.send(JSON.stringify({
           type: 'server_info_update',
           data: {
@@ -1355,7 +1517,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           messageType: 'chat',
           isCommand: false
         });
-        
+
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ 
             type: 'chat_message', 
@@ -1370,7 +1532,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     bot.on('message', async (jsonMsg: any) => {
       try {
         let message: string;
-        
+
         if (typeof jsonMsg === 'string') {
           message = jsonMsg;
         } else if (jsonMsg && typeof jsonMsg.toString === 'function') {
@@ -1380,14 +1542,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         } else {
           message = '[Unable to parse message]';
         }
-        
+
         if (message && 
             !message.startsWith('<') && 
             !message.includes('»') && 
             !message.includes('[Player]') &&
             !message.match(/\[\d{2}:\d{2}:\d{2}\]\[Server\]\[Player\]/) &&
             message.trim() !== '') {
-          
+
           const systemMessage = await storage.createChatMessage({
             connectionId,
             username: 'Server',
@@ -1395,7 +1557,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             messageType: 'system',
             isCommand: false
           });
-          
+
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ 
               type: 'chat_message', 
@@ -1417,7 +1579,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           type: 'ping_update', 
           data: { ping } 
         }));
-        
+
         if (bot.entity) {
           ws.send(JSON.stringify({
             type: 'position_update',
@@ -1428,13 +1590,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           }));
         }
-        
+
         const playersList = Object.values(bot.players).map((player: any) => ({
           uuid: player.uuid,
           username: player.username,
           ping: player.ping
         }));
-        
+
         ws.send(JSON.stringify({
           type: 'server_info_update',
           data: {
@@ -1443,7 +1605,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             motd: "Connected"
           }
         }));
-        
+
         ws.send(JSON.stringify({
           type: 'players_update',
           data: {
@@ -1453,7 +1615,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }));
       }
     }, 3000);
-    
+
     bot.on('end', () => {
       clearInterval(updateInterval);
     });
@@ -1488,7 +1650,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const sessionId = `help-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-      
+
       // Create Discord channel
       const channel = await guild.channels.create({
         name: `help-${sessionId.split('-')[1]}`,
@@ -1542,7 +1704,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const channel = await discordClient.channels.fetch(helpSession.discordChannelId) as TextChannel;
       if (channel) {
         await channel.send(`**User:** ${message}`);
-        
+
         // Echo message back to client
         ws.send(JSON.stringify({
           type: 'help_message',

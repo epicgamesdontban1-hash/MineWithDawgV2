@@ -1,0 +1,6 @@
+Added Themes
+Fixed Chat
+Movement buttons don't work
+Secure Chat button not found
+Fixed GUI Bugs
+Date : 8/29/2025 9:30PM Friday

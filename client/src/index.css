@@ -53,7 +53,14 @@
   --tracking-normal: 0em;
   --spacing: 0.25rem;
 
-  /* Minecraft-themed colors */
+  /* Minecraft-themed colors (defaults, will be overridden by theme system) */
+  --background: hsl(222.2 84% 4.9%);
+  --background-secondary: hsl(217.2 32.6% 17.5%);
+  --background-tertiary: hsl(217.2 32.6% 15%);
+  --foreground-secondary: hsl(215 20.2% 65.1%);
+  --foreground-muted: hsl(215.4 16.3% 46.9%);
+  --primary-dark: hsl(102 45% 30%);
+  --border-light: hsl(217.2 32.6% 25%);
   --minecraft-green: hsl(102 45% 49%);
   --minecraft-dark-green: hsl(102 45% 30%);
   --minecraft-gold: hsl(45 98% 51%);

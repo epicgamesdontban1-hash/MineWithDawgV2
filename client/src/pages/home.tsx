@@ -13,6 +13,7 @@ import { RegisterForm } from '../components/auth/RegisterForm';
 import { ServerProfileManager } from '../components/profiles/ServerProfileManager';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '../components/ui/dialog';
 import { ScrollArea } from '../components/ui/scroll-area';
+import { ThemeSelector } from '../components/ui/theme-selector';
 import { Server, MessageSquare, Settings, Users, Package, Shield, HelpCircle, LogOut, Eye, EyeOff, ChevronDown, ChevronUp, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, RotateCcw, Move3D, Activity, Gamepad2, Zap, Clock, Play, Pause, Trash2, Download, Info, AlertTriangle, CheckCircle2, Circle, Timer, Send, ExternalLink, BookOpen, Lock } from 'lucide-react';
 
 interface ChatMessage {
@@ -147,6 +148,14 @@ export default function Home() {
   const [botAuthMode, setBotAuthMode] = useState('offline'); // New state for bot auth mode
   const [showLearnMore, setShowLearnMore] = useState(false);
   const [activeLearnSection, setActiveLearnSection] = useState('overview');
+  const [microsoftSession, setMicrosoftSession] = useState({
+    sessionToken: null as string | null,
+    email: null as string | null,
+    expiresAt: null as Date | null
+  });
+  const [isConnecting, setIsConnecting] = useState(false); // State to track if a connection attempt is in progress
+  const [secureShareMode, setSecureShareMode] = useState(false); // State for secure share mode
+  const [chatMode, setChatMode] = useState<'ALL' | 'SERVER_ONLY' | 'PLAYER_ONLY'>('ALL'); // New state for chat mode filtering
 
   const { isConnected: wsConnected, sendMessage, ws } = useWebSocket({
     onMessage: (message) => {
@@ -177,6 +186,32 @@ export default function Home() {
           });
           break;
 
+        case 'microsoft_session_created':
+          setMicrosoftAuth(prev => ({
+            ...prev,
+            message: "Authentication successful! Connecting to server...",
+            verificationUri: undefined,
+            userCode: undefined
+          }));
+
+          // Store session details
+          setMicrosoftSession({
+            sessionToken: data.sessionToken,
+            email: data.email,
+            expiresAt: new Date(data.expiresAt)
+          });
+
+          toast({
+            title: "Authentication Successful!",
+            description: "Microsoft account verified! Connecting to server...",
+          });
+
+          // Close the modal after a short delay
+          setTimeout(() => {
+            setMicrosoftAuth({ isActive: false });
+          }, 2000);
+          break;
+
         case 'microsoft_auth_verified':
           setMicrosoftAuth(prev => ({
             ...prev,
@@ -186,18 +221,13 @@ export default function Home() {
           }));
 
           toast({
-            title: "Authentication Successful!",
+            title: "Authentication Verified!",
             description: data.message,
           });
-
-          // Close the modal after a short delay
-          setTimeout(() => {
-            setMicrosoftAuth({ isActive: false });
-          }, 2000);
           break;
 
         case 'bot_connected':
-          // setIsConnecting(false); // This is handled by useWebSocket hook
+          setIsConnecting(false); // Connection attempt finished
           setMicrosoftAuth({ isActive: false }); // Ensure modal is closed
           setConnectionStatus(prev => ({
             ...prev,
@@ -243,6 +273,7 @@ export default function Home() {
             serverInfo: { ...prev.serverInfo, motd: "Disconnected" }
           }));
           setOnlinePlayers([]);
+          setIsConnecting(false); // Connection attempt finished
 
           // Close Microsoft auth modal if it's open
           setMicrosoftAuth({ isActive: false });
@@ -378,52 +409,8 @@ export default function Home() {
           });
           break;
 
-        // Removed redundant Microsoft auth cases as they are handled in the initial connection setup and the `message` payload
-        // case 'auth_status':
-        //   if (data.status === 'starting_auth') {
-        //     setMicrosoftAuth(prev => ({
-        //       ...prev,
-        //       isActive: true,
-        //       message: data.message
-        //     }));
-        //   }
-        //   break;
-
-        // case 'microsoft_auth_code':
-        //   setMicrosoftAuth(prev => ({
-        //     ...prev,
-        //     isActive: true,
-        //     verificationUri: data.verificationUri,
-        //     userCode: data.userCode,
-        //     message: data.message
-        //   }));
-        //   toast({
-        //     title: "Microsoft Authentication Required",
-        //     description: "Please complete authentication in the popup window",
-        //   });
-        //   break;
-
-        // case 'microsoft_auth_verified':
-        //   setMicrosoftAuth(prev => ({
-        //     ...prev,
-        //     message: data.message,
-        //     verificationUri: undefined,
-        //     userCode: undefined
-        //   }));
-
-        //   toast({
-        //     title: "Authentication Successful!",
-        //     description: data.message,
-        //   });
-
-        //   // Close the modal after a short delay
-        //   setTimeout(() => {
-        //     setMicrosoftAuth({ isActive: false });
-        //   }, 2000);
-        //   break;
-
         case 'connection_error':
-          // setIsConnecting(false); // This is handled by useWebSocket hook
+          setIsConnecting(false); // Connection attempt finished
           setMicrosoftAuth({ isActive: false }); // Close auth modal on error
           toast({
             title: "Connection Error",
@@ -433,6 +420,7 @@ export default function Home() {
           break;
 
         case 'bot_error': // Added specific handling for bot_error
+          setIsConnecting(false); // Connection attempt finished
           toast({
             title: "Bot Error",
             description: message.message || "An error occurred with the bot",
@@ -542,6 +530,7 @@ export default function Home() {
     setCurrentUser(null);
     setIsAuthenticated(false);
     localStorage.removeItem('currentUser');
+    setMicrosoftSession({ sessionToken: null, email: null, expiresAt: null }); // Clear session on logout
 
     // Disconnect bot if connected
     if (connectionStatus.isConnected && connectionId) {
@@ -561,13 +550,29 @@ export default function Home() {
     setMessageOnLoadDelay(profile.messageOnLoadDelay || 2000);
   };
 
+  const secureMask = (text: string | null | undefined) => {
+    if (!text) return '';
+    if (text.includes('@')) {
+      const parts = text.split('@');
+      const localPart = parts[0];
+      const domainPart = parts[1];
+      if (localPart.length <= 2) {
+        return `*@${domainPart}`;
+      }
+      return `${localPart.substring(0, 1)}***${localPart.substring(localPart.length - 1)}@${domainPart}`;
+    }
+    if (text.length <= 4) {
+      return '****';
+    }
+    return `***${text.substring(text.length - 2)}`;
+  };
 
   const handleConnect = async () => {
-    if (!username.trim() || !serverIP.trim()) {
+    if (!username.trim() || !serverIP.trim() || isConnecting || connectionStatus.isConnected) {
       toast({
         title: "Invalid Input",
-        description: authMode === 'microsoft'
-          ? "Please enter both email and server IP"
+        description: botAuthMode === 'microsoft'
+          ? "Please enter both Microsoft email and server IP"
           : "Please enter both username and server IP",
         variant: "destructive",
       });
@@ -583,6 +588,9 @@ export default function Home() {
       return;
     }
 
+    setIsConnecting(true);
+
+    // Create connection first
     try {
       const response = await fetch('/api/connections', {
         method: 'POST',
@@ -591,46 +599,37 @@ export default function Home() {
           username: username.trim(),
           serverIp: serverIP.trim(),
           version,
-          authMode: botAuthMode // Use botAuthMode here
+          authMode: botAuthMode
         })
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to create connection');
+        throw new Error('Failed to create connection');
       }
 
       const connection = await response.json();
       setConnectionId(connection.id);
 
-      // Store connection data for auto-reconnect
-      setLastConnectionData({
-        username: username.trim(),
-        serverIp: serverIP.trim(),
-        version,
-        authMode: botAuthMode // Use botAuthMode here
-      });
+      const connectionData = {
+        type: 'connect_bot',
+        data: {
+          connectionId: connection.id,
+          username: username.trim(),
+          serverIp: serverIP.trim(),
+          version,
+          authMode: botAuthMode,
+          messageOnLoad: messageOnLoad.trim(),
+          messageOnLoadDelay,
+          sessionToken: microsoftSession.sessionToken // Include session token if available
+        }
+      };
 
-      // Directly send the connect_bot message through the WebSocket
-      if (wsConnected && sendMessage) {
-        sendMessage({
-          type: 'connect_bot',
-          data: {
-            connectionId: connection.id,
-            username,
-            serverIp: serverIP,
-            version,
-            authMode: botAuthMode, // Use botAuthMode here
-            messageOnLoad: messageOnLoad.trim(),
-            messageOnLoadDelay
-          }
-        });
-      }
+      sendMessage(connectionData);
     } catch (error) {
-      console.error('Connection attempt failed:', error);
+      setIsConnecting(false);
       toast({
-        title: "Connection Failed",
-        description: error instanceof Error ? error.message : "An unknown error occurred",
+        title: "Connection Error",
+        description: error instanceof Error ? error.message : "Failed to create connection",
         variant: "destructive",
       });
     }
@@ -647,6 +646,7 @@ export default function Home() {
       setBotLogs([]);
       setAutoReconnect(false);
       setLastConnectionData(null);
+      setMicrosoftSession({ sessionToken: null, email: null, expiresAt: null }); // Clear session on disconnect
 
       // Clear auto-reconnect timeout
       if (autoReconnectTimeoutRef.current) {
@@ -693,7 +693,8 @@ export default function Home() {
             username: lastConnectionData.username,
             serverIp: lastConnectionData.serverIp,
             version: lastConnectionData.version,
-            authMode: lastConnectionData.authMode
+            authMode: lastConnectionData.authMode,
+            sessionToken: microsoftSession.sessionToken // Include session token if available
           }
         });
       }
@@ -711,7 +712,7 @@ export default function Home() {
 
     const isCommand = chatInput.startsWith('/');
     const messageType = isCommand ? 'send_command' : 'send_chat';
-    const content = isCommand ? chatInput : chatInput;
+    const content = chatInput; // Use chatInput directly
 
     sendMessage({
       type: messageType,
@@ -1028,12 +1029,12 @@ export default function Home() {
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-4">
         <div className="w-full max-w-md">
           {authMode === 'login' ? (
-            <LoginForm 
+            <LoginForm
               onLogin={handleLogin}
               onSwitchToRegister={() => setAuthMode('register')}
             />
           ) : (
-            <RegisterForm 
+            <RegisterForm
               onRegister={handleLogin}
               onSwitchToLogin={() => setAuthMode('login')}
             />
@@ -1064,7 +1065,8 @@ export default function Home() {
               </Badge>
 
               <div className="flex items-center space-x-2 text-sm text-gray-300">
-                <span>Welcome, {currentUser?.username}!</span>
+                <span>Welcome, {secureShareMode ? secureMask(currentUser?.username || '') : currentUser?.username}!</span>
+                <ThemeSelector />
                 <Dialog open={showLearnMore} onOpenChange={setShowLearnMore}>
                   <DialogTrigger asChild>
                     <Button
@@ -1197,11 +1199,20 @@ export default function Home() {
                   <Button
                     data-testid="button-connect"
                     onClick={handleConnect}
-                    disabled={connectionStatus.isConnected || !wsConnected}
+                    disabled={connectionStatus.isConnected || !wsConnected || isConnecting}
                     className="flex-1 bg-minecraft-green hover:bg-minecraft-dark-green"
                   >
-                    <Play className="mr-2 h-4 w-4" />
-                    Connect
+                    {isConnecting ? (
+                      <div className="flex items-center space-x-2">
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        <span>Connecting...</span>
+                      </div>
+                    ) : (
+                      <>
+                        <Play className="mr-2 h-4 w-4" />
+                        Connect
+                      </>
+                    )}
                   </Button>
                   <Button
                     data-testid="button-disconnect"
@@ -1438,7 +1449,7 @@ export default function Home() {
                 <Button
                   data-testid="button-toggle-spammer"
                   onClick={toggleSpammer}
-                  disabled={spammerEnabled && !connectionStatus.isConnected}
+                  disabled={!connectionStatus.isConnected && spammerEnabled} // Allow disabling if disconnected
                   className={`w-full font-bold ${
                     spammerEnabled
                       ? 'bg-red-600 hover:bg-red-700 text-white'
@@ -1504,7 +1515,8 @@ export default function Home() {
                     variant={activeTab === 'inventory' ? 'default' : 'outline'}
                     className="flex-1 text-sm"
                   >
-                    📦 Inventory
+                    <Package className="h-4 w-4 mr-1" />
+                    Inventory
                   </Button>
                   <Button
                     data-testid="tab-admin"
@@ -1512,7 +1524,8 @@ export default function Home() {
                     variant={activeTab === 'admin' ? 'default' : 'outline'}
                     className="flex-1 text-sm"
                   >
-                    Admin {isAdminAuthenticated ? '🔓' : '🔒'}
+                    <Shield className="h-4 w-4 mr-1" />
+                    Admin {isAdminAuthenticated ? <CheckCircle2 className="h-3 w-3 ml-1 text-green-400" /> : <Lock className="h-3 w-3 ml-1 text-red-400" />}
                   </Button>
                 </div>
               </CardHeader>
@@ -1593,60 +1606,71 @@ export default function Home() {
                     </div>
                   ) : activeTab === 'players' ? (
                     <div
-                      className="flex-1 p-4 overflow-y-auto max-h-96 space-y-2"
+                      className="flex-1 p-4 overflow-hidden flex flex-col"
                       data-testid="players-list"
                     >
                       {!connectionStatus.isConnected ? (
-                        <div className="text-gray-400 text-center py-8">
-                          Connect to a server to see online players!
+                        <div className="text-gray-400 text-center py-8 flex-1 flex items-center justify-center">
+                          <div>
+                            <Users className="h-12 w-12 mx-auto mb-4 text-gray-600" />
+                            <div>Connect to a server to see online players!</div>
+                          </div>
                         </div>
                       ) : onlinePlayers.length === 0 ? (
-                        <div className="text-gray-400 text-center py-8">
-                          No players online or data not available
+                        <div className="text-gray-400 text-center py-8 flex-1 flex items-center justify-center">
+                          <div>
+                            <Users className="h-12 w-12 mx-auto mb-4 text-gray-600" />
+                            <div>No players online or data not available</div>
+                          </div>
                         </div>
                       ) : (
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between border-b border-gray-700 pb-2">
-                            <h3 className="text-lg font-semibold text-minecraft-green">
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                          <div className="flex items-center justify-between border-b border-gray-700 pb-2 mb-3 flex-shrink-0">
+                            <h3 className="text-lg font-semibold text-minecraft-green flex items-center">
+                              <Users className="h-5 w-5 mr-2" />
                               Online Players ({onlinePlayers.length})
                             </h3>
                           </div>
-                          {onlinePlayers.map((player) => (
-                            <div key={player.uuid} className="bg-gray-700 rounded-lg p-3 border border-gray-600">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center space-x-3">
-                                  <div className="w-8 h-8 bg-minecraft-green rounded flex items-center justify-center">
-                                    <span className="text-white text-sm font-bold">
-                                      {player.username.charAt(0).toUpperCase()}
-                                    </span>
-                                  </div>
-                                  <div>
-                                    <div className="font-medium text-white">
-                                      {player.username}
+                          <ScrollArea className="flex-1">
+                            <div className="space-y-3 pr-4">
+                              {onlinePlayers.map((player) => (
+                                <div key={player.uuid} className="bg-gray-700 rounded-lg p-3 border border-gray-600">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center space-x-3">
+                                      <div className="w-8 h-8 bg-minecraft-green rounded flex items-center justify-center">
+                                        <span className="text-white text-sm font-bold">
+                                          {player.username.charAt(0).toUpperCase()}
+                                        </span>
+                                      </div>
+                                      <div>
+                                        <div className="font-medium text-white">
+                                          {player.username}
+                                        </div>
+                                        <div className="text-xs text-gray-400">
+                                          UUID: {player.uuid.substring(0, 8)}...
+                                        </div>
+                                      </div>
                                     </div>
-                                    <div className="text-xs text-gray-400">
-                                      UUID: {player.uuid.substring(0, 8)}...
+                                    <div className="text-right">
+                                      {player.ping !== undefined && (
+                                        <div className="text-sm text-gray-400">
+                                          {player.ping}ms
+                                        </div>
+                                      )}
+                                      <div className="w-3 h-3 bg-status-online rounded-full animate-pulse" />
                                     </div>
                                   </div>
                                 </div>
-                                <div className="text-right">
-                                  {player.ping !== undefined && (
-                                    <div className="text-sm text-gray-400">
-                                      {player.ping}ms
-                                    </div>
-                                  )}
-                                  <div className="w-3 h-3 bg-status-online rounded-full animate-pulse" />
-                                </div>
-                              </div>
+                              ))}
                             </div>
-                          ))}
+                          </ScrollArea>
                         </div>
                       )}
 
                       {kickReason && (
-                        <div className="mt-4 p-3 bg-red-900/20 border border-red-600 rounded-lg">
+                        <div className="mt-4 p-3 bg-red-900/20 border border-red-600 rounded-lg flex-shrink-0">
                           <div className="flex items-center space-x-2">
-                            <div className="w-4 h-4 bg-red-500 rounded-full" />
+                            <AlertTriangle className="w-4 h-4 text-red-500" />
                             <span className="text-red-400 font-medium">Last Disconnect Reason:</span>
                           </div>
                           <div className="text-red-300 mt-1">
@@ -1657,23 +1681,29 @@ export default function Home() {
                     </div>
                   ) : activeTab === 'inventory' ? (
                     <div
-                      className="flex-1 p-4 overflow-y-auto max-h-96 space-y-2"
+                      className="flex-1 p-4 overflow-hidden flex flex-col"
                       data-testid="inventory-display"
                     >
                       {!connectionStatus.isConnected ? (
-                        <div className="text-gray-400 text-center py-8">
-                          Connect to a server to view bot inventory!
+                        <div className="text-gray-400 text-center py-8 flex-1 flex items-center justify-center">
+                          <div>
+                            <Package className="h-12 w-12 mx-auto mb-4 text-gray-600" />
+                            <div>Connect to a server to view bot inventory!</div>
+                          </div>
                         </div>
                       ) : botInventory.length === 0 ? (
-                        <div className="text-gray-400 text-center py-8">
-                          <div className="text-4xl mb-2">📦</div>
-                          <div>Inventory is empty or not loaded</div>
-                          <div className="text-sm mt-2">Click the "📦 Inventory" button to refresh</div>
+                        <div className="text-gray-400 text-center py-8 flex-1 flex items-center justify-center">
+                          <div>
+                            <Package className="h-12 w-12 mx-auto mb-4 text-gray-600" />
+                            <div>Inventory is empty or not loaded</div>
+                            <div className="text-sm mt-2">Click the "Inventory" button to refresh</div>
+                          </div>
                         </div>
                       ) : (
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between border-b border-gray-700 pb-2">
-                            <h3 className="text-lg font-semibold text-minecraft-green">
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                          <div className="flex items-center justify-between border-b border-gray-700 pb-2 mb-3 flex-shrink-0">
+                            <h3 className="text-lg font-semibold text-minecraft-green flex items-center">
+                              <Package className="h-5 w-5 mr-2" />
                               Bot Inventory ({botInventory.length} items)
                             </h3>
                             <Button
@@ -1681,50 +1711,55 @@ export default function Home() {
                               size="sm"
                               className="bg-minecraft-gold hover:bg-yellow-600 text-gray-900"
                             >
+                              <RotateCcw className="h-4 w-4 mr-1" />
                               Refresh
                             </Button>
                           </div>
-                          <div className="space-y-2 max-h-64 overflow-y-auto">
-                            {botInventory.map((item, index) => (
-                              <div key={index} className="bg-gray-700 rounded border border-gray-600 p-3 flex items-center justify-between">
-                                <div className="flex items-center space-x-3">
-                                  <div className="text-xl">📦</div>
-                                  <div>
-                                    <div className="text-white font-medium">
-                                      {item.displayName || item.name || 'Unknown Item'}
-                                    </div>
-                                    <div className="text-xs text-gray-400">
-                                      Slot {item.slot}
+                          <ScrollArea className="flex-1">
+                            <div className="space-y-2 pr-4">
+                              {botInventory.map((item, index) => (
+                                <div key={index} className="bg-gray-700 rounded border border-gray-600 p-3 flex items-center justify-between">
+                                  <div className="flex items-center space-x-3">
+                                    <Package className="h-5 w-5 text-minecraft-green" />
+                                    <div>
+                                      <div className="text-white font-medium">
+                                        {item.displayName || item.name || 'Unknown Item'}
+                                      </div>
+                                      <div className="text-xs text-gray-400">
+                                        Slot {item.slot}
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                                <div className="flex items-center space-x-2">
-                                  <div className="text-minecraft-green font-bold">
-                                    x{item.count}
+                                  <div className="flex items-center space-x-2">
+                                    <div className="text-minecraft-green font-bold">
+                                      x{item.count}
+                                    </div>
+                                    <Button
+                                      onClick={() => handleDropItem(item.slot)}
+                                      size="sm"
+                                      variant="destructive"
+                                      className="text-xs px-2 py-1 h-6"
+                                    >
+                                      <Trash2 className="h-3 w-3 mr-1" />
+                                      Drop
+                                    </Button>
                                   </div>
-                                  <Button
-                                    onClick={() => handleDropItem(item.slot)}
-                                    size="sm"
-                                    variant="destructive"
-                                    className="text-xs px-2 py-1 h-6"
-                                  >
-                                    Drop
-                                  </Button>
                                 </div>
-                              </div>
-                            ))}
-                          </div>
+                              ))}
+                            </div>
+                          </ScrollArea>
                         </div>
                       )}
                     </div>
                   ) : (
                     <div
-                      className="flex-1 p-4 overflow-y-auto max-h-96"
+                      className="flex-1 p-4 overflow-hidden flex flex-col"
                       data-testid="admin-panel"
                     >
                       {showAdminLogin && !isAdminAuthenticated ? (
-                        <div className="flex flex-col items-center justify-center space-y-4 py-12">
+                        <div className="flex flex-col items-center justify-center space-y-4 py-12 flex-1">
                           <div className="text-center">
+                            <Shield className="h-16 w-16 mx-auto mb-4 text-minecraft-green" />
                             <h3 className="text-xl font-semibold text-minecraft-green mb-2">Admin Access Required</h3>
                             <p className="text-gray-400 mb-6">Enter password to access admin panel</p>
                           </div>
@@ -1742,6 +1777,7 @@ export default function Home() {
                                 onClick={handleAdminLogin}
                                 className="flex-1 bg-minecraft-green hover:bg-minecraft-dark-green"
                               >
+                                <Lock className="h-4 w-4 mr-1" />
                                 Login
                               </Button>
                               <Button
@@ -1759,19 +1795,23 @@ export default function Home() {
                           </div>
                         </div>
                       ) : !isAdminAuthenticated ? (
-                        <div className="text-center py-12">
+                        <div className="text-center py-12 flex-1 flex items-center justify-center">
                           <div className="text-gray-400">
-                            <div className="text-6xl mb-4">🔒</div>
+                            <Lock className="h-16 w-16 mx-auto mb-4 text-gray-600" />
                             <h3 className="text-lg font-semibold mb-2">Admin Panel Locked</h3>
                             <p>Click the Admin tab again to authenticate</p>
                           </div>
                         </div>
                       ) : (
-                        <div className="space-y-4">
-                          <div className="flex items-center justify-between">
-                            <h3 className="text-lg font-semibold text-minecraft-green">Bot Management</h3>
+                        <div className="flex-1 flex flex-col overflow-hidden">
+                          <div className="flex items-center justify-between mb-4 flex-shrink-0">
+                            <h3 className="text-lg font-semibold text-minecraft-green flex items-center">
+                              <Settings className="h-5 w-5 mr-2" />
+                              Bot Management
+                            </h3>
                             <div className="flex items-center space-x-3">
                               <Badge variant="outline" className="text-xs">
+                                <Activity className="h-3 w-3 mr-1" />
                                 {adminConnections.filter(conn => conn.isActive).length} Active
                               </Badge>
                               <Button
@@ -1783,67 +1823,84 @@ export default function Home() {
                                 size="sm"
                                 className="text-xs"
                               >
+                                <LogOut className="h-3 w-3 mr-1" />
                                 Logout
                               </Button>
                             </div>
                           </div>
 
                           {isLoadingAdmin ? (
-                            <div className="text-center py-8 text-gray-400">Loading bots...</div>
+                            <div className="text-center py-8 text-gray-400 flex-1 flex items-center justify-center">
+                              <div>
+                                <div className="w-8 h-8 border-2 border-minecraft-green/30 border-t-minecraft-green rounded-full animate-spin mx-auto mb-4" />
+                                <div>Loading bots...</div>
+                              </div>
+                            </div>
                           ) : adminConnections.length === 0 ? (
-                            <div className="text-gray-400 text-center py-8">
-                              No bot connections found
+                            <div className="text-gray-400 text-center py-8 flex-1 flex items-center justify-center">
+                              <div>
+                                <Server className="h-12 w-12 mx-auto mb-4 text-gray-600" />
+                                <div>No bot connections found</div>
+                              </div>
                             </div>
                           ) : (
-                            <div className="space-y-3">
-                              {adminConnections.map((conn) => (
-                                <div key={conn.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex-1">
-                                      <div className="flex items-center space-x-3">
-                                        <div className={`w-3 h-3 rounded-full ${
-                                          conn.isActive ? 'bg-status-online animate-pulse' : 'bg-status-offline'
-                                        }`} />
-                                        <div>
-                                          <div className="font-medium text-white">
-                                            {conn.username}
-                                          </div>
-                                          <div className="text-sm text-gray-400">
-                                            {conn.serverIp} • {conn.version}
+                            <ScrollArea className="flex-1">
+                              <div className="space-y-3 pr-4">
+                                {adminConnections.map((conn) => (
+                                  <div key={conn.id} className="bg-gray-700 rounded-lg p-4 border border-gray-600">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex-1">
+                                        <div className="flex items-center space-x-3">
+                                          <div className={`w-3 h-3 rounded-full ${
+                                            conn.isActive ? 'bg-status-online animate-pulse' : 'bg-status-offline'
+                                          }`} />
+                                          <div>
+                                            <div className="font-medium text-white">
+                                              {conn.username}
+                                            </div>
+                                            <div className="text-sm text-gray-400">
+                                              {conn.serverIp} • {conn.version}
+                                            </div>
                                           </div>
                                         </div>
-                                      </div>
-                                      <div className="mt-2 flex items-center space-x-4 text-xs text-gray-400">
-                                        <span>
-                                          Status: <span className={conn.isActive ? 'text-green-400' : 'text-red-400'}>
-                                            {conn.isActive ? 'Online' : 'Offline'}
+                                        <div className="mt-2 flex items-center space-x-4 text-xs text-gray-400">
+                                          <span className="flex items-center">
+                                            <Circle className="h-2 w-2 mr-1" />
+                                            Status: <span className={conn.isActive ? 'text-green-400' : 'text-red-400'}>
+                                              {conn.isActive ? 'Online' : 'Offline'}
+                                            </span>
                                           </span>
-                                        </span>
-                                        {conn.lastPing !== undefined && (
-                                          <span>Ping: {conn.lastPing}ms</span>
-                                        )}
-                                        <span>
-                                          Created: {formatTime(new Date(conn.createdAt))}
-                                        </span>
+                                          {conn.lastPing !== undefined && (
+                                            <span className="flex items-center">
+                                              <Activity className="h-2 w-2 mr-1" />
+                                              Ping: {conn.lastPing}ms
+                                            </span>
+                                          )}
+                                          <span className="flex items-center">
+                                            <Clock className="h-2 w-2 mr-1" />
+                                            Created: {formatTime(new Date(conn.createdAt))}
+                                          </span>
+                                        </div>
                                       </div>
-                                    </div>
-                                    <div className="flex space-x-2">
-                                      {conn.isActive && (
-                                        <Button
-                                          onClick={() => handleTerminateBot(conn.id)}
-                                          variant="destructive"
-                                          size="sm"
-                                          className="text-xs"
-                                          data-testid={`terminate-bot-${conn.id}`}
-                                        >
-                                          Terminate
-                                        </Button>
-                                      )}
+                                      <div className="flex space-x-2">
+                                        {conn.isActive && (
+                                          <Button
+                                            onClick={() => handleTerminateBot(conn.id)}
+                                            variant="destructive"
+                                            size="sm"
+                                            className="text-xs"
+                                            data-testid={`terminate-bot-${conn.id}`}
+                                          >
+                                            <Trash2 className="h-3 w-3 mr-1" />
+                                            Terminate
+                                          </Button>
+                                        )}
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              ))}
-                            </div>
+                                ))}
+                              </div>
+                            </ScrollArea>
                           )}
                         </div>
                       )}
@@ -1874,6 +1931,26 @@ export default function Home() {
                       <div className="mt-2 text-xs text-gray-400">
                         Tip: Use "/" prefix for commands (e.g., /help, /tp, /gamemode)
                       </div>
+                      {activeTab === 'chat' && (
+                        <div className="flex items-center space-x-1 mt-2">
+                          <span className="text-xs text-gray-400 mr-2">Filter:</span>
+                          {['ALL', 'SERVER_ONLY', 'PLAYER_ONLY'].map((mode) => (
+                            <Button
+                              key={mode}
+                              onClick={() => setChatMode(mode as 'ALL' | 'SERVER_ONLY' | 'PLAYER_ONLY')}
+                              variant={chatMode === mode ? 'default' : 'outline'}
+                              size="sm"
+                              className={`text-xs px-2 py-1 h-6 ${
+                                chatMode === mode
+                                  ? 'bg-minecraft-green text-gray-900'
+                                  : 'text-gray-300 hover:bg-gray-700'
+                              }`}
+                            >
+                              {mode === 'SERVER_ONLY' ? 'SERVER' : mode === 'PLAYER_ONLY' ? 'PLAYERS' : 'ALL'}
+                            </Button>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1900,7 +1977,8 @@ export default function Home() {
                       variant="outline"
                       className="bg-minecraft-gold hover:bg-yellow-600 border-yellow-600 text-gray-900 font-bold"
                     >
-                      📦 Inventory
+                      <Package className="h-4 w-4 mr-1" />
+                      Inventory
                     </Button>
                   </div>
                 </div>
@@ -2172,7 +2250,7 @@ export default function Home() {
 
       {/* Learn More Dialog */}
       <Dialog open={showLearnMore} onOpenChange={setShowLearnMore}>
-        <DialogContent className="max-w-4xl max-h-[80vh] bg-gray-800 border-minecraft-dark-stone text-white">
+        <DialogContent className="max-w-6xl w-[95vw] h-[90vh] bg-gray-800 border-minecraft-dark-stone text-white overflow-hidden">
           <DialogHeader>
             <DialogTitle className="text-2xl font-gaming text-minecraft-green flex items-center">
               <BookOpen className="mr-2" />
@@ -2183,47 +2261,50 @@ export default function Home() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex gap-4 h-full">
+          <div className="flex gap-4 h-full overflow-hidden">
             {/* Sidebar Navigation */}
-            <div className="w-64 bg-gray-900 rounded-lg p-4">
-              <div className="space-y-2">
-                {[
-                  { id: 'overview', title: 'Overview', icon: Info },
-                  { id: 'mojang', title: 'Mojang Disclaimer', icon: Shield },
-                  { id: 'how-it-works', title: 'How It Works', icon: Settings },
-                  { id: 'privacy', title: 'Privacy Policy', icon: Eye },
-                  { id: 'safety', title: 'Account Safety', icon: Lock },
-                  { id: 'updates', title: 'Recent Updates', icon: Download },
-                  { id: 'developer', title: 'About Developer', icon: Users },
-                  { id: 'features', title: 'Features', icon: Package },
-                ].map((section) => {
-                  const IconComponent = section.icon;
-                  return (
-                    <Button
-                      key={section.id}
-                      onClick={() => setActiveLearnSection(section.id)}
-                      variant={activeLearnSection === section.id ? 'default' : 'ghost'}
-                      className={`w-full justify-start text-left ${
-                        activeLearnSection === section.id 
-                          ? 'bg-minecraft-green text-gray-900' 
-                          : 'text-gray-300 hover:bg-gray-700'
-                      }`}
-                    >
-                      <IconComponent className="h-4 w-4 mr-2" />
-                      {section.title}
-                    </Button>
-                  );
-                })}
-              </div>
+            <div className="w-64 bg-gray-900 rounded-lg p-4 flex-shrink-0">
+              <ScrollArea className="h-full">
+                <div className="space-y-2">
+                  {[
+                    { id: 'overview', title: 'Overview', icon: Info },
+                    { id: 'mojang', title: 'Mojang Disclaimer', icon: Shield },
+                    { id: 'how-it-works', title: 'How It Works', icon: Settings },
+                    { id: 'privacy', title: 'Privacy Policy', icon: Eye },
+                    { id: 'safety', title: 'Account Safety', icon: Lock },
+                    { id: 'updates', title: 'Recent Updates', icon: Download },
+                    { id: 'developer', title: 'About Developer', icon: Users },
+                    { id: 'features', title: 'Features', icon: Package },
+                  ].map((section) => {
+                    const IconComponent = section.icon;
+                    return (
+                      <Button
+                        key={section.id}
+                        onClick={() => setActiveLearnSection(section.id)}
+                        variant={activeLearnSection === section.id ? 'default' : 'ghost'}
+                        className={`w-full justify-start text-left ${
+                          activeLearnSection === section.id
+                            ? 'bg-minecraft-green text-gray-900'
+                            : 'text-gray-300 hover:bg-gray-700'
+                        }`}
+                      >
+                        <IconComponent className="h-4 w-4 mr-2" />
+                        {section.title}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
             </div>
 
             {/* Content Area */}
-            <ScrollArea className="flex-1 bg-gray-900 rounded-lg p-6">
+            <div className="flex-1 bg-gray-900 rounded-lg overflow-hidden">
+              <ScrollArea className="h-full p-6">
               {activeLearnSection === 'overview' && (
                 <div className="space-y-4">
                   <h3 className="text-xl font-semibold text-minecraft-green">Welcome to MineWithDawg v2</h3>
                   <p className="text-gray-300">
-                    MineWithDawg is the first and best free Minecraft bot service that runs entirely through your web browser. 
+                    MineWithDawg is the first and best free Minecraft bot service that runs entirely through your web browser.
                     No downloads, no installations, no complex setup - just pure convenience.
                   </p>
                   <div className="bg-minecraft-green/10 border border-minecraft-green rounded-lg p-4">
@@ -2251,13 +2332,13 @@ export default function Home() {
                       Important Notice
                     </h4>
                     <p className="text-gray-300">
-                      <strong>MineWithDawg is NOT affiliated with, endorsed by, or connected to Mojang AB, Microsoft Corporation, 
+                      <strong>MineWithDawg is NOT affiliated with, endorsed by, or connected to Mojang AB, Microsoft Corporation,
                       or any official Minecraft services.</strong>
                     </p>
                   </div>
                   <div className="space-y-3 text-gray-300">
                     <p>
-                      Minecraft® is a trademark of Mojang AB and Microsoft Corporation. This service is an independent, 
+                      Minecraft® is a trademark of Mojang AB and Microsoft Corporation. This service is an independent,
                       community-created tool that interacts with Minecraft servers through publicly available protocols.
                     </p>
                     <p>
@@ -2270,7 +2351,7 @@ export default function Home() {
                       <li>• Not use bots for griefing, cheating, or malicious activities</li>
                     </ul>
                     <p className="text-yellow-400">
-                      Use this service responsibly and at your own risk. We are not responsible for any consequences 
+                      Use this service responsibly and at your own risk. We are not responsible for any consequences
                       resulting from bot usage on third-party servers.
                     </p>
                   </div>
@@ -2284,28 +2365,28 @@ export default function Home() {
                     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                       <h4 className="font-semibold text-minecraft-green mb-2">1. Browser-Based Architecture</h4>
                       <p className="text-gray-300">
-                        Our service runs entirely in your web browser using modern web technologies. When you connect a bot, 
+                        Our service runs entirely in your web browser using modern web technologies. When you connect a bot,
                         our servers create a Minecraft client that communicates with the target server on your behalf.
                       </p>
                     </div>
                     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                       <h4 className="font-semibold text-minecraft-green mb-2">2. Real-Time Communication</h4>
                       <p className="text-gray-300">
-                        WebSocket connections provide instant communication between your browser and the bot. You can see 
+                        WebSocket connections provide instant communication between your browser and the bot. You can see
                         live chat messages, player movements, and server events in real-time.
                       </p>
                     </div>
                     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                       <h4 className="font-semibold text-minecraft-green mb-2">3. Advanced Bot Features</h4>
                       <p className="text-gray-300">
-                        Control your bot with movement keys, send chat messages and commands, view inventory, monitor player lists, 
+                        Control your bot with movement keys, send chat messages and commands, view inventory, monitor player lists,
                         and use advanced features like auto-reconnect and spam protection.
                       </p>
                     </div>
                     <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
                       <h4 className="font-semibold text-minecraft-green mb-2">4. Security & Privacy</h4>
                       <p className="text-gray-300">
-                        Microsoft authentication is handled through official OAuth flows. We never store passwords and use 
+                        Microsoft authentication is handled through official OAuth flows. We never store passwords and use
                         secure token-based authentication for all communications.
                       </p>
                     </div>
@@ -2337,7 +2418,7 @@ export default function Home() {
                     </ul>
                     <h4 className="font-semibold text-minecraft-green">Data Usage:</h4>
                     <p>
-                      All collected data is used solely for providing bot functionality, debugging issues, and improving 
+                      All collected data is used solely for providing bot functionality, debugging issues, and improving
                       the service. We never sell, rent, or share your data with third parties for marketing purposes.
                     </p>
                   </div>
@@ -2354,7 +2435,7 @@ export default function Home() {
                         Microsoft Authentication
                       </h4>
                       <p className="text-gray-300">
-                        When using Microsoft authentication, you're redirected to official Microsoft servers. 
+                        When using Microsoft authentication, you're redirected to official Microsoft servers.
                         We never see or store your Microsoft credentials.
                       </p>
                     </div>
@@ -2441,7 +2522,7 @@ export default function Home() {
                     <div className="bg-minecraft-gold/10 border border-minecraft-gold rounded-lg p-4">
                       <h4 className="font-semibold text-minecraft-gold mb-2">Created by Doggo 🐕</h4>
                       <p className="text-gray-300">
-                        MineWithDawg was developed by a passionate Minecraft enthusiast who wanted to create 
+                        MineWithDawg was developed by a passionate Minecraft enthusiast who wanted to create
                         the first truly accessible, web-based Minecraft bot service that anyone could use for free.
                       </p>
                     </div>
@@ -2457,7 +2538,7 @@ export default function Home() {
                         <li>• There was no truly web-based bot service available</li>
                       </ul>
                       <p>
-                        The goal was simple: <strong>Create the first and best free Minecraft bot service that runs 
+                        The goal was simple: <strong>Create the first and best free Minecraft bot service that runs
                         entirely through the web, making bot functionality accessible to everyone.</strong>
                       </p>
                     </div>
@@ -2474,8 +2555,8 @@ export default function Home() {
                     <div className="bg-green-900/20 border border-green-600 rounded-lg p-4">
                       <h4 className="font-semibold text-green-400 mb-2">Our Mission</h4>
                       <p className="text-gray-300">
-                        To provide the Minecraft community with free, accessible, and powerful bot tools while 
-                        respecting the game, its developers, and fellow players. We believe everyone should have 
+                        To provide the Minecraft community with free, accessible, and powerful bot tools while
+                        respecting the game, its developers, and fellow players. We believe everyone should have
                         access to quality bot services without barriers.
                       </p>
                     </div>
@@ -2569,6 +2650,7 @@ export default function Home() {
                 </div>
               )}
             </ScrollArea>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
